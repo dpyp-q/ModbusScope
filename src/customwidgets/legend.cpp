@@ -1,0 +1,478 @@
+
+#include "legend.h"
+
+#include "graphview/graphview.h"
+#include "models/graphdatamodel.h"
+#include "models/guimodel.h"
+#include "util/result.h"
+#include "util/util.h"
+
+#include <QApplication>
+#include <QColorDialog>
+#include <QHeaderView>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QStyleOption>
+
+using State = DataQuality::State;
+
+Legend::Legend(QWidget* parent) : QFrame(parent), _pGuiModel(nullptr), _pGraphDataModel(nullptr), _pGraphView(nullptr)
+{
+    _pLayout = new QVBoxLayout();
+
+    _pNoGraphs = new QLabel("No active graphs");
+    _pLegendTable = new QTableWidget(this);
+    _pLegendTable->setRowCount(0);
+    _pLegendTable->setColumnCount(cColummnCount);
+
+    _pLegendTable->verticalHeader()->setDefaultSectionSize(_pLegendTable->verticalHeader()->fontMetrics().height() + 2);
+    _pLegendTable->verticalHeader()->hide();
+
+    _pLegendTable->setShowGrid(false);
+    _pLegendTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    _pLegendTable->setFocusPolicy(Qt::NoFocus);
+    _pLegendTable->setSelectionMode(QAbstractItemView::NoSelection);
+    _pLegendTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    _pLegendTable->setHorizontalHeaderLabels(QStringList() << " " << " " << "Value" << "Signal");
+    _pLegendTable->hide();
+
+    QHeaderView* horizontalHeader = _pLegendTable->horizontalHeader();
+    QFontMetrics fontMetric = _pLegendTable->horizontalHeader()->fontMetrics();
+
+    horizontalHeader->setMinimumSectionSize(fontMetric.boundingRect("X").width());
+    horizontalHeader->setSectionResizeMode(QHeaderView::Interactive);
+
+    /* Set default size of columns */
+    horizontalHeader->resizeSection(cColummnColor, fontMetric.boundingRect("X").width());
+    horizontalHeader->resizeSection(cColummnAxis, fontMetric.boundingRect("XXX").width());
+    horizontalHeader->resizeSection(cColummnValue, fontMetric.boundingRect("[-0000000]").width());
+
+    /* stretch text column */
+    horizontalHeader->setSectionResizeMode(cColummnText, QHeaderView::Stretch);
+
+    _pLayout->setSpacing(0);
+    _pLayout->setContentsMargins(0, 0, 0, 0); // This is redundant with setMargin, which is deprecated
+
+    _pLayout->addWidget(_pNoGraphs);
+    _pLayout->addWidget(_pLegendTable);
+    setLayout(_pLayout);
+
+    // For rightclick menu
+    _pLegendMenu = new QMenu(parent);
+
+    _pToggleVisibilityAction = _pLegendMenu->addAction("Toggle item visibility");
+    _pToggleVisibilityAction->setEnabled(false);
+
+    (void) _pLegendMenu->addSeparator();
+    _pHideAllAction = _pLegendMenu->addAction("Hide all");
+    _pHideAllAction->setEnabled(false);
+
+    _pShowAllAction = _pLegendMenu->addAction("Show all");
+    _pShowAllAction->setEnabled(false);
+
+    /*
+     * Use timer to avoid click when doubleclicked
+     * https://forum.qt.io/topic/25513/how-can-i-prevent-the-clicked-signal-when-i-want-to-grab-the-doubleclicked-signal-in-mytablewidget/9?_=1738268572974&lang=en-US
+     */
+    _clickTimer.setInterval(qApp->doubleClickInterval());
+    connect(&_clickTimer, &QTimer::timeout, this,
+            [this]() { this->cellClicked(this->_clickedRow, this->_clickedColumn); });
+
+    connect(_pToggleVisibilityAction, &QAction::triggered, this, &Legend::toggleVisibilityClicked);
+    connect(_pHideAllAction, &QAction::triggered, this, &Legend::hideAll);
+    connect(_pShowAllAction, &QAction::triggered, this, &Legend::showAll);
+    connect(_pLegendTable, &QTableWidget::cellClicked, this,
+            [this](int rows, int columns) { this->processClick(false, rows, columns); });
+    connect(_pLegendTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int rows, int columns) { this->processClick(true, rows, columns); });
+
+    setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(this, &Legend::customContextMenuRequested, this, &Legend::showContextMenu);
+}
+
+Legend::~Legend()
+{
+    delete _pLegendMenu;
+}
+
+void Legend::setGraphview(GraphView* pGraphView)
+{
+    _pGraphView = pGraphView;
+}
+
+void Legend::setModels(GuiModel* pGuiModel, GraphDataModel* pGraphDataModel)
+{
+    _pGuiModel = pGuiModel;
+    _pGraphDataModel = pGraphDataModel;
+
+    connect(_pGraphDataModel, &GraphDataModel::activeChanged, this, &Legend::updateLegend);
+    connect(_pGraphDataModel, &GraphDataModel::added, this, &Legend::updateLegend);
+    connect(_pGraphDataModel, &GraphDataModel::moved, this, &Legend::updateLegend);
+    connect(_pGraphDataModel, &GraphDataModel::removed, this, &Legend::updateLegend);
+    connect(_pGraphDataModel, &GraphDataModel::visibilityChanged, this, &Legend::changeGraphVisibility);
+    connect(_pGraphDataModel, &GraphDataModel::colorChanged, this, &Legend::changeGraphColor);
+    connect(_pGraphDataModel, &GraphDataModel::valueAxisChanged, this, &Legend::changeGraphAxis);
+    connect(_pGraphDataModel, &GraphDataModel::labelChanged, this, &Legend::changeGraphLabel);
+    connect(_pGraphDataModel, &GraphDataModel::selectedGraphChanged, this, &Legend::handleSelectedGraphChanged);
+}
+
+void Legend::clearLegendData()
+{
+    for (auto& result : _lastReceivedList)
+    {
+        result.setState(State::NoValue);
+    }
+
+    updateDataInLegend();
+}
+
+void Legend::addLastReceivedDataToLegend(ResultDoubleList resultList)
+{
+    _lastReceivedList = resultList;
+
+    updateDataInLegend();
+}
+
+void Legend::updateDataInLegend()
+{
+    /* Select correct values to show */
+    if (_pGuiModel->cursorValues())
+    {
+        updateCursorDataInLegend();
+    }
+    else
+    {
+        updateValueDataInLegend();
+    }
+}
+
+void Legend::updateLegend()
+{
+    _lastReceivedList.clear();
+
+    if (_pGraphDataModel->activeCount() != 0)
+    {
+        QList<GraphIdx> activeList;
+
+        _pGraphDataModel->activeGraphIndexList(activeList);
+        _pLegendTable->setRowCount(0);
+
+        for (GraphIdx idx : std::as_const(activeList))
+        {
+            addItem(idx);
+            _lastReceivedList.append(ResultDouble(0, State::NoValue));
+        }
+
+        _pNoGraphs->hide();
+        _pLegendTable->show();
+
+        _pToggleVisibilityAction->setEnabled(true);
+        _pHideAllAction->setEnabled(true);
+        _pShowAllAction->setEnabled(true);
+    }
+    else
+    {
+        _pNoGraphs->show();
+        _pLegendTable->hide();
+
+        _pToggleVisibilityAction->setEnabled(false);
+        _pHideAllAction->setEnabled(false);
+        _pShowAllAction->setEnabled(false);
+    }
+}
+
+void Legend::changeGraphVisibility(GraphIdx graphIdx)
+{
+    const ActiveIdx activeGraphIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+    if (activeGraphIdx.isValid())
+    {
+        QFont itemFont = _pLegendTable->item(activeGraphIdx.v, cColummnValue)->font();
+        QColor foreGroundColor;
+        QColor graphColor;
+
+        if (_pGraphDataModel->isVisible(graphIdx))
+        {
+            foreGroundColor = Qt::black;
+            itemFont.setItalic(false);
+
+            graphColor = _pGraphDataModel->color(graphIdx);
+        }
+        else
+        {
+            foreGroundColor = Qt::gray;
+            itemFont.setItalic(true);
+
+            graphColor = Qt::white;
+        }
+
+        _pLegendTable->item(activeGraphIdx.v, cColummnAxis)->setFont(itemFont);
+        _pLegendTable->item(activeGraphIdx.v, cColummnValue)->setFont(itemFont);
+        _pLegendTable->item(activeGraphIdx.v, cColummnText)->setFont(itemFont);
+
+        _pLegendTable->item(activeGraphIdx.v, cColummnColor)->setBackground(graphColor);
+        _pLegendTable->item(activeGraphIdx.v, cColummnAxis)->setForeground(foreGroundColor);
+        _pLegendTable->item(activeGraphIdx.v, cColummnValue)->setForeground(foreGroundColor);
+        _pLegendTable->item(activeGraphIdx.v, cColummnText)->setForeground(foreGroundColor);
+    }
+}
+
+void Legend::changeGraphColor(GraphIdx graphIdx)
+{
+    const ActiveIdx activeGraphIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+    if (activeGraphIdx.isValid())
+    {
+        _pLegendTable->item(activeGraphIdx.v, cColummnColor)->setBackground(_pGraphDataModel->color(graphIdx));
+    }
+}
+
+void Legend::changeGraphAxis(GraphIdx graphIdx)
+{
+    const ActiveIdx activeGraphIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+    if (activeGraphIdx.isValid())
+    {
+        _pLegendTable->item(activeGraphIdx.v, cColummnAxis)->setText(valueAxisText(graphIdx));
+    }
+}
+
+void Legend::changeGraphLabel(GraphIdx graphIdx)
+{
+    const ActiveIdx activeGraphIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+    if (activeGraphIdx.isValid())
+    {
+        _pLegendTable->item(activeGraphIdx.v, cColummnText)->setText(_pGraphDataModel->label(graphIdx));
+    }
+}
+
+void Legend::updateCursorDataInLegend()
+{
+    QList<double> valueList;
+    const bool bInRange = _pGraphView->valuesUnderCursor(valueList);
+
+    if (_pLegendTable->rowCount() == valueList.size())
+    {
+        uint i = 0;
+        for (auto value : std::as_const(valueList))
+        {
+            QString cursorValue;
+            if (bInRange)
+            {
+                // No error
+                cursorValue = QString("[%1]").arg(Util::formatDoubleForExport(value));
+            }
+            else
+            {
+                /* Show error */
+                cursorValue = "?";
+            }
+
+            _pLegendTable->item(i, cColummnValue)->setText(cursorValue);
+
+            i++;
+        }
+    }
+}
+
+void Legend::updateValueDataInLegend()
+{
+    if (_pLegendTable->rowCount() == _lastReceivedList.size())
+    {
+        uint i = 0;
+        for (const auto& result : std::as_const(_lastReceivedList))
+        {
+            QString dataValue;
+            if (result.isUsable())
+            {
+                dataValue = QString("%1").arg(Util::formatDoubleForExport(result.value()));
+            }
+            else
+            {
+                dataValue = "-";
+            }
+
+            _pLegendTable->item(i, cColummnValue)->setText(dataValue);
+
+            const QColor background =
+              result.state() == State::Invalid ? GraphDataModel::lightRed : QColorConstants::White;
+            _pLegendTable->item(i, cColummnAxis)->setBackground(background);
+            _pLegendTable->item(i, cColummnValue)->setBackground(background);
+            _pLegendTable->item(i, cColummnText)->setBackground(background);
+
+            i++;
+        }
+    }
+}
+
+void Legend::addItem(GraphIdx graphIdx)
+{
+    int row = _pLegendTable->rowCount();
+    _pLegendTable->insertRow(row);
+
+    _pLegendTable->setItem(row, cColummnColor, new QTableWidgetItem(""));
+    _pLegendTable->item(row, cColummnColor)->setBackground(_pGraphDataModel->color(graphIdx));
+
+    _pLegendTable->setItem(row, cColummnAxis, new QTableWidgetItem(valueAxisText(graphIdx)));
+    _pLegendTable->item(row, cColummnAxis)->setTextAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+
+    _pLegendTable->setItem(row, cColummnValue, new QTableWidgetItem("-"));
+    _pLegendTable->item(row, cColummnValue)->setTextAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+
+    _pLegendTable->setItem(row, cColummnText, new QTableWidgetItem(_pGraphDataModel->label(graphIdx)));
+
+    changeGraphVisibility(graphIdx);
+}
+
+void Legend::toggleItemVisibility(ActiveIdx activeGraphIdx)
+{
+    if (activeGraphIdx.isValid())
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(activeGraphIdx);
+
+        _pGraphDataModel->setVisible(graphIdx, !_pGraphDataModel->isVisible(graphIdx));
+    }
+}
+
+QString Legend::valueAxisText(GraphIdx graphIdx)
+{
+    return _pGraphDataModel->valueAxis(graphIdx) == GraphData::VALUE_AXIS_SECONDARY ? "Y2" : "Y1";
+}
+
+void Legend::showContextMenu(const QPoint& pos)
+{
+    const QPoint posInLegendContent = _pLegendTable->viewport()->mapFromParent(pos);
+    qint32 row = _pLegendTable->indexAt(posInLegendContent).row();
+
+    _popupMenuItem = ActiveIdx(row);
+
+    if (row == -1)
+    {
+        _pToggleVisibilityAction->setEnabled(false);
+    }
+    else
+    {
+        _pToggleVisibilityAction->setEnabled(true);
+    }
+
+    _pLegendMenu->popup(mapToGlobal(pos));
+}
+
+void Legend::toggleVisibilityClicked()
+{
+    toggleItemVisibility(_popupMenuItem);
+}
+
+void Legend::hideAll()
+{
+    for (qint32 idx = 0; idx < _pGraphDataModel->size(); idx++)
+    {
+        _pGraphDataModel->setVisible(GraphIdx(idx), false);
+    }
+}
+
+void Legend::showAll()
+{
+    for (qint32 idx = 0; idx < _pGraphDataModel->size(); idx++)
+    {
+        _pGraphDataModel->setVisible(GraphIdx(idx), true);
+    }
+}
+
+void Legend::handleSelectedGraphChanged(GraphIdx graphIdx)
+{
+    const ActiveIdx activeIdx =
+      graphIdx.isValid() ? _pGraphDataModel->convertToActiveGraphIndex(graphIdx) : ActiveIdx();
+
+    for (int idx = 0; idx < _pLegendTable->rowCount(); idx++)
+    {
+        QFont itemFont = _pLegendTable->item(idx, cColummnValue)->font();
+
+        if (idx == activeIdx.v)
+        {
+            itemFont.setBold(true);
+        }
+        else
+        {
+            itemFont.setBold(false);
+        }
+
+        _pLegendTable->item(idx, cColummnAxis)->setFont(itemFont);
+        _pLegendTable->item(idx, cColummnValue)->setFont(itemFont);
+        _pLegendTable->item(idx, cColummnText)->setFont(itemFont);
+    }
+}
+
+void Legend::processClick(bool bDoubleClick, int row, int column)
+{
+    if (bDoubleClick)
+    {
+        _clickTimer.stop();
+        cellDoubleClicked(row, column);
+    }
+    else
+    {
+        if (!_clickTimer.isActive())
+        {
+            _clickTimer.start();
+            _clickedRow = row;
+            _clickedColumn = column;
+        }
+    }
+}
+
+void Legend::cellDoubleClicked(int row, int column)
+{
+    if (column == cColummnColor)
+    {
+        if ((row != -1) && (row < _pGraphDataModel->activeCount()))
+        {
+            const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(row));
+            if (_pGraphDataModel->isVisible(graphIdx))
+            {
+                QColor color = QColorDialog::getColor(_pGraphDataModel->color(graphIdx));
+
+                if (color.isValid())
+                {
+                    // Set color in model
+                    _pGraphDataModel->setColor(graphIdx, color);
+                }
+            }
+        }
+    }
+    else if (column == cColummnAxis)
+    {
+        if ((row != -1) && (row < _pGraphDataModel->activeCount()))
+        {
+            const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(row));
+            if (_pGraphDataModel->isVisible(graphIdx))
+            {
+                auto valueAxis = _pGraphDataModel->valueAxis(graphIdx);
+
+                valueAxis = valueAxis == GraphData::VALUE_AXIS_PRIMARY ? GraphData::VALUE_AXIS_SECONDARY
+                                                                       : GraphData::VALUE_AXIS_PRIMARY;
+                _pGraphDataModel->setValueAxis(graphIdx, valueAxis);
+            }
+        }
+    }
+    else
+    {
+        /* Other columns */
+        toggleItemVisibility(ActiveIdx(row));
+    }
+}
+
+void Legend::cellClicked(int row, int column)
+{
+    Q_UNUSED(column);
+
+    _clickTimer.stop();
+
+    if ((row != -1) && (row < _pGraphDataModel->activeCount()))
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(row));
+        GraphIdx toSelectGraph = (_pGraphDataModel->selectedGraph() != graphIdx) ? graphIdx : GraphIdx();
+        _pGraphDataModel->setSelectedGraph(toSelectGraph);
+    }
+}

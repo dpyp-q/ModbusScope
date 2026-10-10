@@ -1,0 +1,148 @@
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
+
+#include "util/recentfilemodule.h"
+#include "util/result.h"
+#include "util/updatenotify.h"
+
+#include <QButtonGroup>
+#include <QListWidgetItem>
+#include <QMainWindow>
+#include <QMenu>
+
+namespace Ui {
+class MainWindow;
+}
+
+// Forward declaration
+class QCustomPlot;
+class GraphDataModel;
+class NoteModel;
+class DiagnosticModel;
+class SettingsModel;
+class DataParserModel;
+class DiagnosticDialog;
+class NotesDock;
+class QuickStartDialog;
+class GuiModel;
+class GraphView;
+class MarkerInfo;
+class DataFileHandler;
+class ProjectFileHandler;
+class Legend;
+class StatusBar;
+class MostRecentMenu;
+class OverlayLabel;
+class CommunicationStats;
+class CommunicationStatsModel;
+class GuiStateController;
+class GraphMenuController;
+class ScopeController;
+
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+
+public:
+    explicit MainWindow(ScopeController* pScopeController,
+                        GuiModel* pGuiModel,
+                        SettingsModel* pSettingsModel,
+                        GraphDataModel* pGraphDataModel,
+                        CommunicationStatsModel* pCommunicationStatsModel,
+                        NoteModel* pNoteModel,
+                        DiagnosticModel* pDiagnosticModel,
+                        DataParserModel* pDataParserModel,
+                        QWidget* parent = nullptr);
+    ~MainWindow();
+
+protected:
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* e) override;
+    void dropEvent(QDropEvent* e) override;
+
+private slots:
+
+    /* Menu handlers */
+    void exitApplication();
+    void selectImageExportFile();
+    void showAbout();
+    void openOnlineDoc();
+    void openUpdateUrl();
+    void showSettingsDialog();
+    void handleShowRegisterDialog(bool checked);
+    void addNoteToGraph();
+    void toggleZoom(bool checked);
+    void showDiagnostic();
+    void showNotesDialog();
+    void showMbcImportDialog();
+    void toggleMarkersState();
+    void handleOpenRecentProject(QString projectFile);
+
+    /* Model change handlers */
+    void updateHighlightSampleMenu();
+    void handleZoomStateChanged();
+    void handleActiveGraphsChanged(bool bActiveGraphs);
+    void updateWindowTitle();
+    void handleProjectFilePathChanged();
+    void updateMarkerDockVisibility();
+
+    /* Misc */
+    void scaleWidgetUndocked(bool bFloat);
+    void legendWidgetUndocked(bool bFloat);
+    void showContextMenu(const QPoint& pos);
+    void appFocusChanged(QWidget* old, QWidget* now);
+
+    void showVersionUpdate(UpdateNotify::UpdateState result);
+    void showQuickStartDialog();
+    void handleLoadDemoRequested();
+
+    /* ScopeController handlers */
+    void handleDataProcessed(const ResultDoubleList& results);
+    void handleDataCleared();
+    void handleScopeError(QString message);
+
+private:
+    void setupMenuActions();
+    void setupConnections();
+    void setAxisToAuto();
+    void showRegisterDialog();
+    void showQuickStartIfNeeded();
+
+    Ui::MainWindow* _pUi;
+    ScopeController* _pScopeController;
+    QString _demoFileToLoad;
+    GraphView* _pGraphView;
+
+    GuiModel* _pGuiModel;
+    SettingsModel* _pSettingsModel;
+    GraphDataModel* _pGraphDataModel;
+    CommunicationStatsModel* _pCommunicationStatsModel;
+    NoteModel* _pNoteModel;
+    DiagnosticModel* _pDiagnosticModel;
+    DataParserModel* _pDataParserModel;
+
+    UpdateNotify* _pUpdateNotify;
+
+    DiagnosticDialog* _pDiagnosticDialog;
+
+    NotesDock* _pNotesDock;
+    MarkerInfo* _pMarkerInfo;
+    Legend* _pLegend;
+    StatusBar* _pStatusBar;
+
+    OverlayLabel* _pOverlayLabel;
+
+    QMenu _menuRightClick;
+
+    MostRecentMenu* _pMostRecentMenu;
+    RecentFileModule _recentFileModule;
+
+    GuiStateController* _pGuiStateController;
+    GraphMenuController* _pGraphMenuController;
+
+    QPointF _lastRightClickPos;
+};
+
+#endif // MAINWINDOW_H

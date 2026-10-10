@@ -1,0 +1,123 @@
+{
+    "version": 6,
+    "adapters": [
+        {
+            "type": "modbus",
+            "settings": {
+                "connections": [
+                    {
+                        "id": 0,
+                        "connectiontype": "tcp",
+                        "ip": "127.0.0.1",
+                        "port": 502,
+                        "portname": "COM1",
+                        "baudrate": 115200,
+                        "parity": 0,
+                        "stopbits": 1,
+                        "databits": 8,
+                        "timeout": 1000,
+                        "persistentconnection": true,
+                        "enabled": true
+                    },
+                    {
+                        "id": 1,
+                        "connectiontype": "tcp",
+                        "ip": "127.0.0.1",
+                        "port": 502,
+                        "portname": "COM1",
+                        "baudrate": 115200,
+                        "parity": 0,
+                        "stopbits": 1,
+                        "databits": 8,
+                        "timeout": 1000,
+                        "persistentconnection": true,
+                        "enabled": false
+                    },
+                    {
+                        "id": 2,
+                        "connectiontype": "tcp",
+                        "ip": "127.0.0.1",
+                        "port": 502,
+                        "portname": "COM1",
+                        "baudrate": 115200,
+                        "parity": 0,
+                        "stopbits": 1,
+                        "databits": 8,
+                        "timeout": 1000,
+                        "persistentconnection": true,
+                        "enabled": false
+                    }
+                ],
+                "devices": [
+                    {
+                        "id": 0,
+                        "connectionid": 0,
+                        "slaveid": 1,
+                        "consecutivemax": 125,
+                        "int32littleendian": true
+                    }
+                ]
+            }
+        }
+    ],
+    "devices": [
+        {
+            "id": 1,
+            "adapterId": 0,
+            "name": "Device 1",
+            "adapter": {
+                "type": "modbus"
+            }
+        }
+    ],
+    "log": {
+        "polltime": 1000,
+        "absolutetimes": false,
+        "logtofile": {
+            "enabled": true
+        }
+    },
+    "scope": [
+        {
+            "active": true,
+            "text": "Data point",
+            "expression": "${40001}/2",
+            "color": "#ff0000",
+            "valueaxis": 0
+        },
+        {
+            "active": true,
+            "text": "Data point 2",
+            "expression": "${40002:s16b}",
+            "color": "#0000ff",
+            "valueaxis": 0
+        },
+        {
+            "active": false,
+            "text": "Data point 3",
+            "expression": "${40003:s16b}*10",
+            "color": "#00ffff",
+            "valueaxis": 0
+        }
+    ],
+    "view": {
+        "scale": {
+            "xaxis": {
+                "mode": "sliding",
+                "slidinginterval": 20
+            },
+            "yaxis": [
+                {
+                    "axis": 0,
+                    "mode": "minmax",
+                    "min": 0.0,
+                    "max": 25.0
+                },
+                {
+                    "axis": 1,
+                    "mode": "windowauto"
+                }
+            ]
+        }
+    }
+}

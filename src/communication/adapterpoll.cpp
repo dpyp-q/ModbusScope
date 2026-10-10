@@ -1,0 +1,275 @@
+
+#include "communication/adapterpoll.h"
+
+#include "models/settingsmodel.h"
+#include "util/formatdatetime.h"
+#include "util/scopelogging.h"
+
+AdapterPoll::AdapterPoll(SettingsModel* pSettingsModel, QObject* parent) : QObject(parent)
+{
+    _pPollTimer = new QTimer(this);
+    _pPollTimer->setSingleShot(true);
+    connect(_pPollTimer, &QTimer::timeout, this, &AdapterPoll::triggerRegisterRead);
+
+    _pSettingsModel = pSettingsModel;
+    _lastPollStart = QDateTime::currentMSecsSinceEpoch();
+
+    _pAdapterHub = new AdapterHub(_pSettingsModel, this);
+
+    connect(_pAdapterHub, &AdapterHub::sessionStarted, this, &AdapterPoll::triggerRegisterRead);
+    connect(_pAdapterHub, &AdapterHub::readDataResult, this, &AdapterPoll::onReadDataResult);
+    connect(_pAdapterHub, &AdapterHub::sessionError, this, &AdapterPoll::onSessionError);
+}
+
+AdapterPoll::AdapterPoll(SettingsModel* pSettingsModel, AdapterHub* pAdapterHub, QObject* parent) : QObject(parent)
+{
+    _pPollTimer = new QTimer(this);
+    _pPollTimer->setSingleShot(true);
+    connect(_pPollTimer, &QTimer::timeout, this, &AdapterPoll::triggerRegisterRead);
+
+    _pSettingsModel = pSettingsModel;
+    _lastPollStart = QDateTime::currentMSecsSinceEpoch();
+
+    _pAdapterHub = pAdapterHub;
+
+    connect(_pAdapterHub, &AdapterHub::sessionStarted, this, &AdapterPoll::triggerRegisterRead);
+    connect(_pAdapterHub, &AdapterHub::readDataResult, this, &AdapterPoll::onReadDataResult);
+    connect(_pAdapterHub, &AdapterHub::sessionError, this, &AdapterPoll::onSessionError);
+}
+
+AdapterPoll::~AdapterPoll() = default;
+
+/*! \brief Prepare all protocol adapter subprocesses for use.
+ *
+ * Delegates to AdapterHub::initAdapter(), which discovers and starts each adapter.
+ */
+void AdapterPoll::initAdapter()
+{
+    _pAdapterHub->initAdapter();
+}
+
+void AdapterPoll::startCommunication(QList<DataPoint>& registerList)
+{
+    _registerList = registerList;
+
+    qCInfo(scopeComm) << "Active registers: " << DataPoint::dumpListToString(_registerList);
+    qCInfo(scopeComm) << qUtf8Printable(QString("Start logging: %1").arg(FormatDateTime::currentDateTime()));
+
+    resetCommunicationStats();
+
+    _lastQualities = QList<DataQuality::Quality>(_registerList.size());
+
+    buildAdapterGroups(_registerList);
+
+    if (_pAdapterHub->isAdapterReady())
+    {
+        _pollState = PollState::Active;
+        startSessions();
+    }
+    else
+    {
+        if (_pollState != PollState::WaitingForAdapter)
+        {
+            _pollState = PollState::WaitingForAdapter;
+            _adapterReadyConnection = connect(_pAdapterHub, &AdapterHub::adapterReady, this,
+                                              &AdapterPoll::onAdapterReady, Qt::SingleShotConnection);
+        }
+        _pAdapterHub->initAdapter();
+    }
+}
+
+void AdapterPoll::resetCommunicationStats()
+{
+    _lastPollStart = QDateTime::currentMSecsSinceEpoch();
+}
+
+void AdapterPoll::stopCommunication()
+{
+    if (_pollState == PollState::WaitingForAdapter)
+    {
+        disconnect(_adapterReadyConnection);
+        _adapterReadyConnection = {};
+    }
+    _pollState = PollState::Inactive;
+    _adapterGroups.clear();
+    _pendingResults.clear();
+    _pendingResultAdapters.clear();
+    _pPollTimer->stop();
+    _pAdapterHub->stopSession();
+
+    qCInfo(scopeComm) << qUtf8Printable(QString("Stop logging: %1").arg(FormatDateTime::currentDateTime()));
+}
+
+bool AdapterPoll::isActive() const
+{
+    return _pollState != PollState::Inactive;
+}
+
+void AdapterPoll::triggerRegisterRead()
+{
+    if (_pollState == PollState::Active)
+    {
+        _lastPollStart = QDateTime::currentMSecsSinceEpoch();
+        _pendingResultAdapters.clear();
+        for (auto it = _adapterGroups.constBegin(); it != _adapterGroups.constEnd(); ++it)
+        {
+            if (_pAdapterHub->adapterManager(it.key()) != nullptr)
+            {
+                _pendingResultAdapters.insert(it.key());
+            }
+            else
+            {
+                qCWarning(scopeComm) << "AdapterPoll: no manager for adapter" << it.key() << "- skipping in poll cycle";
+            }
+        }
+        _pendingResults.clear();
+        _pAdapterHub->requestReadData();
+    }
+}
+
+void AdapterPoll::onReadDataResult(const QString& adapterId, ResultDoubleList results)
+{
+    if (_pollState != PollState::Active)
+    {
+        return;
+    }
+
+    _pendingResults.insert(adapterId, results);
+    _pendingResultAdapters.remove(adapterId);
+
+    if (!_pendingResultAdapters.isEmpty())
+    {
+        return;
+    }
+
+    /* All adapters have responded — reconstruct the merged list in original data point order.
+     * Data points not covered by a usable group result are a fault, so they start out Invalid. */
+    ResultDoubleList merged(_registerList.size(), ResultDouble(0.0, DataQuality::State::Invalid));
+    for (auto it = _adapterGroups.constBegin(); it != _adapterGroups.constEnd(); ++it)
+    {
+        const ResultDoubleList& groupResults = _pendingResults.value(it.key());
+        const QList<int>& indices = it.value().originalIndices;
+        if (groupResults.size() != indices.size())
+        {
+            qCWarning(scopeComm) << "AdapterPoll: adapter" << it.key() << "returned" << groupResults.size()
+                                 << "results for" << indices.size() << "registers — skipping group";
+            continue;
+        }
+        for (int j = 0; j < indices.size(); j++)
+        {
+            merged[indices[j]] = groupResults[j];
+        }
+    }
+
+    logQualityChanges(merged);
+
+    emit registerDataReady(merged);
+
+    const quint32 passedInterval = static_cast<quint32>(QDateTime::currentMSecsSinceEpoch() - _lastPollStart);
+    uint waitInterval;
+
+    if (passedInterval > _pSettingsModel->pollTime())
+    {
+        waitInterval = 1;
+    }
+    else
+    {
+        waitInterval = _pSettingsModel->pollTime() - passedInterval;
+    }
+
+    _pPollTimer->start(static_cast<int>(waitInterval));
+}
+
+/*! \brief Returns the AdapterHub owned by this instance. */
+AdapterHub* AdapterPoll::adapterHub() const
+{
+    return _pAdapterHub;
+}
+
+void AdapterPoll::onAdapterReady()
+{
+    if (_pollState == PollState::WaitingForAdapter)
+    {
+        _pollState = PollState::Active;
+        startSessions();
+    }
+}
+
+void AdapterPoll::onSessionError(const QString& message)
+{
+    qCWarning(scopeComm) << "AdapterHub error:" << message;
+    /* AdapterHub::sessionError can also fire outside any startCommunication() cycle (e.g. a failed
+       adapter discovery/initAdapter() at application startup); only tell callers about it when it
+       actually broke an active or pending communication session. */
+    const bool wasCommunicationRelevant = (_pollState != PollState::Inactive);
+    if (_pollState == PollState::WaitingForAdapter)
+    {
+        disconnect(_adapterReadyConnection);
+        _adapterReadyConnection = {};
+    }
+    _pollState = PollState::Inactive;
+    _pendingResults.clear();
+    _pendingResultAdapters.clear();
+    if (wasCommunicationRelevant)
+    {
+        emit communicationError(message);
+    }
+}
+
+void AdapterPoll::buildAdapterGroups(const QList<DataPoint>& registerList)
+{
+    _adapterGroups.clear();
+    for (int i = 0; i < registerList.size(); i++)
+    {
+        const DataPoint& dp = registerList[i];
+        const QString adapterId = _pSettingsModel->adapterIdForDevice(dp.deviceId());
+        _adapterGroups[adapterId].expressions.append(dp.address());
+        _adapterGroups[adapterId].originalIndices.append(i);
+    }
+}
+
+/*!
+ * \brief Log a debug message for every data point whose quality changed since the previous poll
+ *
+ * Only changes are logged, so a data point that stays invalid does not flood the diagnostics.
+ * The baseline at the start of communication is Good, so the first non-good result is logged too.
+ * \param results Merged results in original data point order
+ */
+void AdapterPoll::logQualityChanges(const ResultDoubleList& results)
+{
+    if (results.size() != _lastQualities.size())
+    {
+        qCWarning(scopeComm) << "AdapterPoll: got" << results.size() << "results for" << _lastQualities.size()
+                             << "tracked data points - skipping quality logging";
+        return;
+    }
+
+    for (int idx = 0; idx < results.size(); idx++)
+    {
+        const DataQuality::Quality quality = results[idx].quality();
+        if (quality == _lastQualities[idx])
+        {
+            continue;
+        }
+
+        _lastQualities[idx] = quality;
+
+        QString message =
+          QString("Data point %1: %2").arg(_registerList[idx].description(), DataQuality::stateId(quality.state));
+        const QStringList flagIds = DataQuality::flagIds(quality.flags);
+        if (!flagIds.isEmpty())
+        {
+            message.append(QString(" (%1)").arg(flagIds.join(QLatin1Char('|'))));
+        }
+
+        qCWarning(scopeComm) << qUtf8Printable(message);
+    }
+}
+
+void AdapterPoll::startSessions()
+{
+    for (auto it = _adapterGroups.constBegin(); it != _adapterGroups.constEnd(); ++it)
+    {
+        _pAdapterHub->startSession(it.key(), it.value().expressions);
+    }
+}

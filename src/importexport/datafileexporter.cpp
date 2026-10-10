@@ -1,0 +1,492 @@
+
+#include "datafileexporter.h"
+
+#include "models/communicationstatsmodel.h"
+#include "models/graphdatamodel.h"
+#include "models/notemodel.h"
+#include "models/settingsmodel.h"
+#include "util/formatdatetime.h"
+#include "util/util.h"
+
+DataFileExporter::DataFileExporter(SettingsModel* pSettingsModel,
+                                   GraphDataModel* pGraphDataModel,
+                                   CommunicationStatsModel* pCommunicationStatsModel,
+                                   NoteModel* pNoteModel,
+                                   QObject* parent)
+    : QObject(parent)
+{
+    _pSettingsModel = pSettingsModel;
+    _pGraphDataModel = pGraphDataModel;
+    _pCommunicationStatsModel = pCommunicationStatsModel;
+    _pNoteModel = pNoteModel;
+
+    lastLogTime = QDateTime::currentMSecsSinceEpoch();
+}
+
+DataFileExporter::~DataFileExporter()
+{
+}
+
+void DataFileExporter::enableExporterDuringLog()
+{
+    _dataExportBuffer.clear();
+    lastLogTime = QDateTime::currentMSecsSinceEpoch();
+
+    // Clean file
+    clearFile(_pSettingsModel->writeDuringLogFile());
+
+    exportDataHeader();
+}
+
+void DataFileExporter::disableExporterDuringLog()
+{
+    flushExportBuffer();
+}
+
+/*!
+ * \brief Buffers one line of logged data and flushes it to the data file, when writing during logging is enabled.
+ * \param timeData Timestamp of the line.
+ * \param dataValues Value of each active signal.
+ * \param qualities Data quality of each active signal, aligned with \a dataValues.
+ */
+void DataFileExporter::exportDataLine(double timeData, QList<double> dataValues, QList<DataQuality::Quality> qualities)
+{
+    /* QList correspond with activeGraphList */
+
+    if (_pSettingsModel->writeDuringLog())
+    {
+        // Use buffering
+        _dataExportBuffer.append(formatData(timeData, dataValues, qualities));
+
+        if ((QDateTime::currentMSecsSinceEpoch() - lastLogTime) > _cLogBufferTimeout)
+        {
+            flushExportBuffer();
+        }
+    }
+}
+
+void DataFileExporter::rewriteDataFile(void)
+{
+    _dataExportBuffer.clear();
+    lastLogTime = QDateTime::currentMSecsSinceEpoch();
+
+    exportDataFile(_pSettingsModel->writeDuringLogFile());
+}
+
+void DataFileExporter::exportDataFile(QString dataFile)
+{
+    if (_pGraphDataModel->activeCount() != 0)
+    {
+        QStringList logData;
+
+        // Create header
+        logData.append(constructDataHeader(false));
+
+        // Create label row
+        logData.append(createPropertyRow(E_LABEL));
+
+        // Clean file
+        clearFile(dataFile);
+
+        // Export header data
+        bool bRet = writeToFile(dataFile, logData);
+
+        logData.clear();
+
+        if (bRet)
+        {
+            QList<GraphIdx> activeGraphIndexes;
+            _pGraphDataModel->activeGraphIndexList(activeGraphIndexes);
+            QList<GraphDataSeries::const_iterator> dataListIterators;
+
+            for (qint32 idx = 0; idx < activeGraphIndexes.size(); idx++)
+            {
+                // Save iterators to data lists
+                dataListIterators.append(_pGraphDataModel->dataSeries(activeGraphIndexes[idx])->constBegin());
+            }
+
+            // Add data lines
+            const qint32 dataCount = _pGraphDataModel->dataSeries(activeGraphIndexes[0])->size();
+            for (qint32 i = 0; i < dataCount; i++)
+            {
+                QList<double> dataRowValues;
+                QList<DataQuality::Quality> dataRowQualities;
+                double key = dataListIterators[0]->timestamp;
+                for (qint32 d = 0; d < dataListIterators.size(); d++)
+                {
+                    dataRowValues.append(dataListIterators[d]->value);
+                    dataRowQualities.append(dataListIterators[d]->quality);
+
+                    dataListIterators[d]++;
+                }
+
+                logData.append(formatData(key, dataRowValues, dataRowQualities));
+
+                if (i % _cLogChunkLineCount == 0)
+                {
+                    bRet = writeToFile(dataFile, logData);
+
+                    logData.clear();
+
+                    if (!bRet)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (bRet && (logData.size() > 0))
+            {
+                writeToFile(dataFile, logData);
+            }
+        }
+    }
+}
+
+bool DataFileExporter::updateNoteLines(QString dataFile)
+{
+    bool bSuccess = true;
+
+    QFileInfo fileInfo(dataFile);
+    QString tmpFileName = QString("%1/tmp_%2").arg(fileInfo.path(), fileInfo.fileName());
+
+    QFile srcFile(dataFile);
+    QFile tmpFile(tmpFileName);
+
+    if (srcFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        if (tmpFile.open(QIODevice::WriteOnly | QIODevice::Text))
+        {
+            // Clear tmp file
+            tmpFile.resize(0);
+
+            QTextStream srcStream(&srcFile);
+            QTextStream tmpStream(&tmpFile);
+            QString line;
+            bool bPreviousLineWasEmptyComment = false;
+
+            while (!srcStream.atEnd())
+            {
+                line = srcStream.readLine().trimmed();
+
+                if (line.left(2) == "//")
+                {
+                    bool bEmptyCommentLine = line.length() == 2;
+
+                    if (line.left(6).toLower() == "//note" || (bPreviousLineWasEmptyComment && bEmptyCommentLine))
+                    {
+                        // Skip note lines and avoid 2 subsequent empty comment lines
+                    }
+                    else
+                    {
+                        // copy line
+                        tmpStream << line << "\n";
+                        bPreviousLineWasEmptyComment = bEmptyCommentLine;
+                    }
+                }
+                else
+                {
+                    // No comment line
+                    // Keep first data line in variable to insert after notes
+                    break;
+                }
+            }
+
+            // Add notes
+            QStringList noteRows;
+            createNoteRows(noteRows);
+            if (!noteRows.isEmpty())
+            {
+                for (const QString& noteRow : std::as_const(noteRows))
+                {
+                    tmpStream << noteRow << "\n";
+                }
+
+                tmpStream << "//\n";
+            }
+
+            // Copy last line
+            tmpStream << line << "\n";
+
+            // Copy rest of the file
+            while (!srcStream.atEnd())
+            {
+                tmpStream << srcStream.readLine() << "\n";
+            }
+        }
+        else
+        {
+            bSuccess = false;
+        }
+    }
+    else
+    {
+        bSuccess = false;
+    }
+
+    srcFile.close();
+    tmpFile.close();
+
+    if (bSuccess)
+    {
+        bSuccess = srcFile.remove();
+
+        if (bSuccess)
+        {
+            bSuccess = tmpFile.rename(dataFile);
+        }
+    }
+
+    if (bSuccess)
+    {
+        _pNoteModel->setNotesDataUpdated(false);
+        return true;
+    }
+    else
+    {
+        Util::showError(tr("Update notes in data file (%1) failed").arg(dataFile));
+        return false;
+    }
+}
+
+void DataFileExporter::flushExportBuffer()
+{
+    // Write to file
+    writeToFile(_pSettingsModel->writeDuringLogFile(), _dataExportBuffer);
+
+    _dataExportBuffer.clear();
+    lastLogTime = QDateTime::currentMSecsSinceEpoch();
+}
+
+void DataFileExporter::exportDataHeader()
+{
+    QStringList logData;
+
+    // create header
+    logData.append(constructDataHeader(true));
+
+    // Create label row
+    logData.append(createPropertyRow(E_LABEL));
+
+    // Write to file
+    writeToFile(_pSettingsModel->writeDuringLogFile(), logData);
+}
+
+QStringList DataFileExporter::constructDataHeader(bool bDuringLog)
+{
+    QStringList header;
+
+    if (_pGraphDataModel->activeCount() != 0)
+    {
+        QDateTime dt;
+
+        QString comment = QString("//");
+
+        header.append(comment + "ModbusScope version" + Util::separatorCharacter() + Util::currentVersion());
+
+        // Save start time
+        dt = QDateTime::fromMSecsSinceEpoch(_pCommunicationStatsModel->startTime());
+        header.append(comment + "Start time" + Util::separatorCharacter() + dt.toString("dd-MM-yyyy HH:mm:ss"));
+
+        // Save end time
+        if (bDuringLog)
+        {
+            header.append(comment + "End time" + Util::separatorCharacter() + "data written during logging");
+        }
+        else
+        {
+            dt = QDateTime::fromMSecsSinceEpoch(_pCommunicationStatsModel->endTime());
+            header.append(comment + "End time" + Util::separatorCharacter() + dt.toString("dd-MM-yyyy HH:mm:ss"));
+        }
+
+        header.append(comment + "Poll interval" + Util::separatorCharacter() +
+                      QString::number(_pSettingsModel->pollTime()));
+
+        quint32 success = _pCommunicationStatsModel->successCount();
+        quint32 error = _pCommunicationStatsModel->errorCount();
+        header.append(comment + "Communication success" + Util::separatorCharacter() + QString::number(success));
+        header.append(comment + "Communication errors" + Util::separatorCharacter() + QString::number(error));
+
+        header.append("//");
+
+        header.append(comment + "Quality" + Util::separatorCharacter() + "1");
+
+        header.append("//" + createPropertyRow(E_PROPERTY));
+        header.append("//" + createPropertyRow(E_COLOR));
+        header.append("//" + createPropertyRow(E_EXPRESSION));
+        header.append("//" + createPropertyRow(E_VALUE_AXIS));
+
+        header.append("//");
+
+        QStringList noteRows;
+        createNoteRows(noteRows);
+        if (!noteRows.isEmpty())
+        {
+            header.append(noteRows);
+            header.append("//");
+        }
+    }
+
+    return header;
+}
+
+void DataFileExporter::createNoteRows(QStringList& noteRows)
+{
+    for (qint32 idx = 0; idx < _pNoteModel->size(); idx++)
+    {
+        QString noteline;
+        QString dataString;
+
+        noteline.append("//Note");
+
+        const QPointF& position = _pNoteModel->notePosition(idx);
+
+        dataString = Util::formatDoubleForExport(position.x());
+        noteline.append(Util::separatorCharacter() + dataString);
+
+        dataString = Util::formatDoubleForExport(position.y());
+        noteline.append(Util::separatorCharacter() + dataString);
+
+        noteline.append(Util::separatorCharacter() + '"' + _pNoteModel->textData(idx) + '"');
+
+        noteRows.append(noteline);
+    }
+}
+
+QString DataFileExporter::createPropertyRow(registerProperty prop)
+{
+    QString line;
+
+    switch (prop)
+    {
+    case E_LABEL:
+        line.append("Time (ms)");
+        break;
+
+    case E_PROPERTY:
+        line.append("Property");
+        break;
+
+    case E_COLOR:
+        line.append("Color");
+        break;
+
+    case E_EXPRESSION:
+        line.append("Expression");
+        break;
+
+    case E_VALUE_AXIS:
+        line.append("Axis");
+        break;
+    default:
+        break;
+    }
+
+    for (qint32 i = 0; i < _pGraphDataModel->activeCount(); i++)
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(i));
+
+        QString propertyString;
+        switch (prop)
+        {
+        case E_LABEL:
+        case E_PROPERTY:
+            propertyString = _pGraphDataModel->label(graphIdx);
+            break;
+
+        case E_COLOR:
+            propertyString = _pGraphDataModel->color(graphIdx).name();
+            break;
+
+        case E_EXPRESSION:
+            propertyString = QString("\"%1\"").arg(_pGraphDataModel->simplifiedExpression(graphIdx));
+            break;
+
+        case E_VALUE_AXIS:
+        {
+            qint32 axis = _pGraphDataModel->valueAxis(graphIdx) == GraphData::VALUE_AXIS_PRIMARY ? 0 : 1;
+            propertyString = QString("%1").arg(axis);
+        }
+        break;
+
+        default:
+            break;
+        }
+
+        // Get headers
+        line.append(Util::separatorCharacter() + propertyString);
+
+        if (prop == E_LABEL)
+        {
+            line.append(Util::separatorCharacter() + propertyString + " (quality)");
+        }
+    }
+
+    return line;
+}
+
+QString DataFileExporter::formatData(double timeData, QList<double> dataValues, QList<DataQuality::Quality> qualities)
+{
+    Q_ASSERT(dataValues.size() == qualities.size());
+
+    QString line;
+
+    if (_pSettingsModel->absoluteTimes())
+    {
+        QDateTime dateTime;
+        dateTime.setMSecsSinceEpoch(timeData);
+        line.append(FormatDateTime::formatDateTime(dateTime));
+    }
+    else
+    {
+        // Format time (no decimals)
+        const quint64 t = static_cast<quint64>(timeData);
+        line.append(QString::number(t, 'f', 0));
+    }
+
+    // Add formatted data (maximum 3 decimals, no trailing zeros), each followed by its quality code
+    for (qint32 d = 0; d < dataValues.size(); d++)
+    {
+        line.append(Util::separatorCharacter() + Util::formatDoubleForExport(dataValues[d]));
+
+        const DataQuality::Quality quality = d < qualities.size() ? qualities[d] : DataQuality::Quality{};
+        line.append(Util::separatorCharacter() + QString::number(DataQuality::toExportCode(quality)));
+    }
+
+    return line;
+}
+
+bool DataFileExporter::writeToFile(QString filePath, QStringList logData)
+{
+    bool bRet = false;
+    QFile file(filePath);
+    if (file.open(QIODevice::Append | QIODevice::Text))
+    {
+        QTextStream stream(&file);
+
+        foreach (QString line, logData)
+        {
+            stream << line << "\n";
+        }
+
+        bRet = true;
+    }
+    else
+    {
+        if ((_pSettingsModel->writeDuringLogFile() == filePath) && (_pSettingsModel->writeDuringLog()))
+        {
+            // Disable logging to file on write error
+            _pSettingsModel->setWriteDuringLog(false);
+        }
+
+        Util::showError(tr("Save to data file (%1) failed").arg(filePath));
+    }
+
+    return bRet;
+}
+
+void DataFileExporter::clearFile(QString filePath)
+{
+    QFile file(filePath);
+    (void) file.open(QIODevice::WriteOnly | QIODevice::Text); // Remove all data from file
+}

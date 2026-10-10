@@ -1,0 +1,113 @@
+#ifndef GRAPHVIEW_H
+#define GRAPHVIEW_H
+
+#include "models/graphdata.h"
+#include "util/graphindex.h"
+#include "util/result.h"
+
+#include <QObject>
+#include <QPoint>
+
+/* forward declaration */
+class QCPAxis;
+class QCPGraph;
+class QMouseEvent;
+class GuiModel;
+class GraphDataModel;
+class CommunicationStatsModel;
+class NoteModel;
+class SettingsModel;
+class GraphScale;
+class GraphViewZoom;
+class GraphMarkers;
+class GraphIndicators;
+class GraphQualityMarkers;
+class NoteHandling;
+class ScopePlot;
+
+class GraphView : public QObject
+{
+    Q_OBJECT
+public:
+    explicit GraphView(GuiModel* pGuiModel,
+                       SettingsModel* pSettingsModel,
+                       GraphDataModel* pGraphDataModel,
+                       CommunicationStatsModel* pCommunicationStatsModel,
+                       NoteModel* pNoteModel,
+                       ScopePlot* pPlot,
+                       QObject* parent = nullptr);
+    virtual ~GraphView();
+
+    qint32 graphDataSize();
+    bool valuesUnderCursor(QList<double>& valueList);
+
+    QPointF pixelToPointF(const QPoint& pixel) const;
+    double pixelToClosestKey(double pixel);
+
+    void showMarkers();
+
+public slots:
+
+    void updateTooltip();
+    void enableSamplePoints();
+    void clearGraph(GraphIdx graphIdx);
+    void updateGraphs();
+    void changeGraphColor(GraphIdx graphIdx);
+    void changeGraphAxis(GraphIdx graphIdx);
+    void changeSelectedGraph(GraphIdx graphIdx);
+    void bringToFront(ActiveIdx activeGraphIdx);
+
+    void addData(QList<double> timeData, QList<QList<double> > data, QList<QList<DataQuality::Quality> > qualities);
+    void handleGraphVisibilityChange(GraphIdx graphIdx);
+    void rescalePlot();
+    void plotResults(ResultDoubleList resultList);
+    void clearResults();
+
+signals:
+    void cursorValueUpdate();
+    void dataAddedToPlot(double timeData, QList<double> dataList, QList<DataQuality::Quality> qualityList);
+    void afterGraphUpdate();
+
+private slots:
+    void mousePress(QMouseEvent* event);
+    void mouseRelease(QMouseEvent* event);
+    void mouseWheel();
+    void mouseMove(QMouseEvent* event);
+    void handleSelectionChanged(bool selected);
+
+    void handleSamplePoints();
+
+private:
+    void paintTimeStampToolTip(QPoint pos);
+    void highlightSamples(bool bState);
+    void loadGraphDataFromModel(GraphIdx graphIdx, QCPGraph* pGraph);
+    void setGraphColor(QCPGraph* _pGraph, const QColor& color);
+    void setGraphAxis(QCPGraph* _pGraph, const GraphData::valueAxis_t& axis);
+    double roundToAxisRange(double value, QCPAxis const* pAxis) const;
+    double getClosestPoint(double coordinate);
+    void updateSecondaryAxisVisibility();
+    ActiveIdx getActiveGraphIndex(const QCPGraph* const pGraph);
+
+    QVector<QString> _tickLabels;
+
+    GuiModel* _pGuiModel;
+    SettingsModel* _pSettingsModel;
+    GraphDataModel* _pGraphDataModel;
+    CommunicationStatsModel* _pCommunicationStatsModel;
+    ScopePlot* _pPlot;
+    bool _bCurrentHighlightState;
+
+    GraphScale* _pGraphScale;
+    GraphViewZoom* _pGraphViewZoom;
+    GraphMarkers* _pGraphMarkers;
+    GraphIndicators* _pGraphIndicators;
+    GraphQualityMarkers* _pGraphQualityMarkers;
+    NoteHandling* _pNoteHandling;
+
+    QPoint _tooltipLocation;
+
+    static const qint32 _cPixelPerPointThreshold = 5; /* in pixels */
+    static const quint64 _cOptimizeThreshold = 1000000uL;
+};
+
+#endif // GRAPHVIEW_H

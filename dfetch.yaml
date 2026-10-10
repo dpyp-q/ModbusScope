@@ -1,0 +1,38 @@
+manifest:
+  version: '0.0'
+
+  remotes:
+  - name: github
+    url-base: https://github.com
+
+  projects:
+  - name: muparser
+    dst: libraries/muparser
+    revision: 8285496c9951d1c7c71e175f9e2c9cfe9ca9c969
+    repo-path: beltoforion/muparser
+    ignore:
+    - .github
+    - .vscode
+    - samples
+    - appveyor.yml
+
+  - name: qcustomplot
+    dst: libraries/qcustomplot
+    branch: v2.1.1_Qt6.8_port
+    repo-path: jgeudens/qcustomplot-release
+    patch: libraries/patches/axis_deselect_modifier.patch
+
+  - name: googletest
+    dst: tests/googletest
+    tag: v1.18.0
+    repo-path: google/googletest
+    ignore:
+    - ci
+    - googlemock/test
+    - googletest/test
+
+  - name: lucide-icons
+    dst: icons
+    tag: 0.469.0
+    src: icons
+    repo-path: lucide-icons/lucide.git

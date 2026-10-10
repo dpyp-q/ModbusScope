@@ -1,0 +1,73 @@
+
+#include "tst_graphdata.h"
+
+#include "models/graphdata.h"
+#include "util/util.h"
+
+#include <QTest>
+
+void TestGraphData::init()
+{
+
+}
+
+void TestGraphData::cleanup()
+{
+
+}
+
+/* TODO: Mock Util.h */
+
+void TestGraphData::setLabel()
+{
+    GraphData graphData;
+
+    QString separatorString = QString(Util::separatorCharacter());
+    QString baseString = QString("TEST");
+
+    graphData.setLabel(baseString);
+    QCOMPARE(graphData.label(), baseString);
+
+    QString testString1 = baseString + separatorString;
+    graphData.setLabel(testString1);
+    QCOMPARE(graphData.label(), baseString);
+
+    QString testString2 = separatorString + baseString;
+    graphData.setLabel(testString2);
+    QCOMPARE(graphData.label(), baseString);
+
+    QString testString3 = separatorString + baseString + separatorString;
+    graphData.setLabel(testString3);
+    QCOMPARE(graphData.label(), baseString);
+
+    QString testString4 = baseString + separatorString + baseString;
+    graphData.setLabel(testString4);
+    QCOMPARE(graphData.label(), baseString + baseString);
+}
+
+void TestGraphData::setExpressionResetsStatus()
+{
+    GraphData graphData;
+
+    graphData.setExpression("${40001}}");
+    graphData.setExpressionState(GraphData::ExpressionState::SYNTAX_ERROR);
+
+    graphData.setExpression("${40001}");
+    QCOMPARE(GraphData::ExpressionState::UNKNOWN, graphData.expressionState());
+}
+
+void TestGraphData::copiesShareDataSeries()
+{
+    GraphData graphData;
+
+    GraphData copy = graphData;
+    copy.mutableDataSeries()->add(1, 10);
+
+    /* GraphData copies share the same data series (GraphDataStore relies on this) */
+    QCOMPARE(graphData.dataSeries()->size(), 1);
+    QCOMPARE(graphData.dataSeries()->constBegin()->value, 10.0);
+}
+
+/* TODO: Add extra test for other functions */
+
+QTEST_GUILESS_MAIN(TestGraphData)

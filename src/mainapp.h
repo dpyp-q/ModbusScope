@@ -1,0 +1,48 @@
+#ifndef MAINAPP_H
+#define MAINAPP_H
+
+#include <QObject>
+#include <QString>
+
+class MainWindow;
+class GraphDataModel;
+class CommunicationStatsModel;
+class NoteModel;
+class DiagnosticModel;
+class SettingsModel;
+class DataParserModel;
+class GuiModel;
+class ScopeController;
+
+class MainApp : public QObject
+{
+    Q_OBJECT
+public:
+    explicit MainApp(QStringList cmdArguments, QObject* parent = nullptr);
+    ~MainApp();
+
+signals:
+
+private:
+    struct CommandLineOptions
+    {
+        QString fileToOpen; /* empty when no positional argument given */
+    };
+
+    static CommandLineOptions parseCommandLine(const QStringList& cmdArguments);
+
+    void logInitialInfo();
+
+    SettingsModel* _pSettingsModel;
+    GraphDataModel* _pGraphDataModel;
+    CommunicationStatsModel* _pCommunicationStatsModel;
+    NoteModel* _pNoteModel;
+    DiagnosticModel* _pDiagnosticModel;
+    GuiModel* _pGuiModel;
+    DataParserModel* _pDataParserModel;
+
+    ScopeController* _pScopeController;
+    MainWindow* _pMainWin;
+};
+
+#endif // MAINAPP_H

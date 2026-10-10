@@ -1,0 +1,334 @@
+#ifndef ADAPTERCLIENT_H
+#define ADAPTERCLIENT_H
+
+#include "ProtocolAdapter/adapterprocess.h"
+#include "models/device.h"
+#include "util/result.h"
+
+#include <QJsonObject>
+#include <QMap>
+#include <QObject>
+#include <QSet>
+#include <QStringList>
+#include <QTimer>
+
+#include <memory>
+
+/*!
+ * \brief Lifecycle manager for an external adapter process communicating via JSON-RPC 2.0.
+ *
+ * Drives the full adapter session sequence using an AdapterProcess for transport:
+ *   prepareAdapter() → initialize → describe → describeResult()
+ *   provideConfig()  → configure  → start    → sessionStarted()
+ *   requestReadData() → readData → readDataResult()
+ *   requestStatus() → getStatus → statusResult()
+ *   stopSession() → stop → AWAITING_CONFIG → sessionStopped()
+ *
+ * A rejected adapter.configure or adapter.start lands in ACTIVE_DEGRADED instead of ACTIVE:
+ * sessionStarted() is still emitted, but requestReadData()/requestStatus() answer locally.
+ *
+ * Takes ownership of the AdapterProcess passed to the constructor via std::unique_ptr.
+ */
+class AdapterClient : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AdapterClient(std::unique_ptr<AdapterProcess> pProcess,
+                           QString adapterId = QString(),
+                           QObject* parent = nullptr,
+                           int handshakeTimeoutMs = 10000);
+    ~AdapterClient();
+
+    /*!
+     * \brief Launch the adapter and run the initialization lifecycle up to describe.
+     *
+     * Starts the adapter at \a adapterPath, then sequentially sends
+     * adapter.initialize and adapter.describe. After the describe response is received
+     * and describeResult() is emitted, the client enters the AWAITING_CONFIG state.
+     * The caller must then call provideConfig() to continue the lifecycle.
+     *
+     * \param adapterPath Path to the adapter executable.
+     */
+    void prepareAdapter(const QString& adapterPath);
+
+    /*!
+     * \brief Provide the configuration and data point expressions to send to adapter.configure and adapter.start.
+     *
+     * Must be called after describeResult() has been emitted (i.e., in the
+     * AWAITING_CONFIG state). Sends adapter.configure with the given config,
+     * then continues to adapter.start with the data point expressions, and emits
+     * sessionStarted() on success.
+     *
+     * If the adapter reported an incompatible protocol version, adapter.configure and adapter.start
+     * are never sent: the session is degraded instead (see sessionStarted()).
+     *
+     * \param config JSON object passed as the \c config param to adapter.configure.
+     * \param registerExpressions Data point expression strings passed to adapter.start.
+     */
+    void provideConfig(QJsonObject config, QStringList registerExpressions);
+
+    /*!
+     * \brief Send an adapter.readData request to the active adapter.
+     *
+     * Must only be called after sessionStarted() has been emitted.
+     * Emits readDataResult() when the adapter responds.
+     */
+    void requestReadData();
+
+    /*!
+     * \brief Send an adapter.getStatus request to the active adapter.
+     *
+     * Must only be called after sessionStarted() has been emitted.
+     * Emits statusResult() when the adapter responds.
+     */
+    void requestStatus();
+
+    /*!
+     * \brief Send adapter.stop to pause polling and keep the adapter process alive.
+     *
+     * When ACTIVE, sends adapter.stop and transitions to STOPPING_SESSION. The adapter
+     * remains alive in AWAITING_CONFIG state; provideConfig() can be called again for
+     * the next session. sessionStopped() is emitted once the adapter acknowledges.
+     *
+     * When ACTIVE_DEGRADED, no adapter.stop is sent (no real session was ever established);
+     * the client transitions to AWAITING_CONFIG immediately and emits sessionStopped() then
+     * adapterReady() synchronously.
+     *
+     * When called in STARTING or any other non-ACTIVE non-idle state, the process is
+     * force-killed directly (adapter.stop requires an established session).
+     */
+    void stopSession();
+
+    /*!
+     * \brief Returns true when the adapter is ready to accept provideConfig() (AWAITING_CONFIG state).
+     */
+    bool isReady() const;
+
+    /*!
+     * \brief Returns true when the adapter process is not running (IDLE state).
+     */
+    bool isIdle() const;
+
+    /*!
+     * \brief Returns true when the adapter has an established session (ACTIVE or ACTIVE_DEGRADED state).
+     */
+    bool isActive() const;
+
+    /*!
+     * \brief Send an adapter.dataPointSchema request to discover the data point UI schema.
+     *
+     * Must only be called after describeResult() has been emitted (i.e., in the
+     * AWAITING_CONFIG state). Emits dataPointSchemaResult() when the adapter responds.
+     */
+    void requestDataPointSchema();
+
+    /*!
+     * \brief Send an adapter.describeDataPoint request to parse a data point expression.
+     *
+     * Can be called in AWAITING_CONFIG or ACTIVE state.
+     * Emits describeDataPointResult() when the adapter responds.
+     *
+     * \param expression The data point expression string to describe.
+     */
+    void describeDataPoint(const QString& expression);
+
+    /*!
+     * \brief Send an adapter.validateDataPoint request to validate a data point expression.
+     *
+     * Can be called in AWAITING_CONFIG or ACTIVE state.
+     * Emits validateDataPointResult() when the adapter responds.
+     *
+     * \param expression The data point expression string to validate.
+     */
+    void validateDataPoint(const QString& expression);
+
+    /*!
+     * \brief Send an adapter.buildExpression request to construct a data point expression string.
+     *
+     * Can be called in AWAITING_CONFIG or ACTIVE state.
+     * Emits buildExpressionResult() when the adapter responds.
+     *
+     * \param addressFields Address field values as returned by the data point schema form (e.g. objectType, address).
+     * \param dataType      Data type identifier (e.g. "16b"). Omitted from params when empty; adapter uses its default.
+     * \param deviceId      Device identifier. Omitted from params when zero; adapter uses its default.
+     */
+    void buildExpression(const QJsonObject& addressFields, const QString& dataType, deviceId_t deviceId);
+
+    /*!
+     * \brief Send an adapter.expressionHelp request to retrieve expression syntax help text.
+     *
+     * Can be called in AWAITING_CONFIG or ACTIVE state.
+     * Emits expressionHelpResult() when the adapter responds.
+     */
+    void requestExpressionHelp();
+
+signals:
+    /*!
+     * \brief Emitted when the adapter has been initialized, described, and configured, and a session
+     * start has been attempted.
+     *
+     * Also emitted when adapter.configure or adapter.start is rejected (e.g. too many devices for
+     * an unlicensed session, or an invalid data point expression): the session is considered started
+     * but degraded, so requestReadData() reports invalid results for every data point instead of
+     * leaving the caller waiting indefinitely for a session that will never start. The same applies
+     * to an adapter that reported an incompatible protocol version: it is never configured or
+     * started, and is announced (once per session, after provideConfig() returns) together with an
+     * error diagnostic.
+     */
+    void sessionStarted();
+
+    /*!
+     * \brief Emitted when an adapter.readData response has been received.
+     * \param results One entry per data point, in the same order as the expressions passed to provideConfig().
+     */
+    void readDataResult(ResultDoubleList results);
+
+    /*!
+     * \brief Emitted when an unrecoverable error occurs (process failure, RPC error).
+     * \param message Human-readable error description.
+     */
+    void sessionError(QString message);
+
+    /*!
+     * \brief Emitted during prepareAdapter() when the adapter.describe response is received.
+     * \param description The full describe result object (name, version, configVersion, schema, defaults,
+     * capabilities).
+     */
+    void describeResult(QJsonObject description);
+
+    /*!
+     * \brief Emitted when an adapter.getStatus response has been received.
+     * \param active true if the adapter is actively polling.
+     */
+    void statusResult(bool active);
+
+    /*!
+     * \brief Emitted when the adapter has stopped polling and is ready for the next session.
+     *
+     * After a normal stopSession() this is emitted while the adapter process is still alive
+     * (the client is in AWAITING_CONFIG). If adapter.stop times out or fails, the process is
+     * force-killed and this signal is still emitted (client is then IDLE).
+     */
+    void sessionStopped();
+
+    /*!
+     * \brief Emitted whenever the client enters AWAITING_CONFIG state.
+     *
+     * Fired both during initial adapter initialization (after adapter.describe) and after
+     * a session is stopped via adapter.stop. Callers waiting to start a new session
+     * should connect to this signal when the adapter is not yet ready.
+     */
+    void adapterReady();
+
+    /*!
+     * \brief Emitted when an adapter.diagnostic notification is received from the adapter, or when
+     * AdapterClient itself synthesizes a diagnostic (e.g. a non-fatal adapter.start rejection).
+     * \param level Severity level string: "debug", "info", "warning", or "error".
+     * \param message The diagnostic message.
+     */
+    void diagnosticReceived(QString level, QString message);
+
+    /*!
+     * \brief Emitted when an adapter.dataPointSchema response has been received.
+     * \param schema The full data point schema object (addressSchema, defaults).
+     */
+    void dataPointSchemaResult(QJsonObject schema);
+
+    /*!
+     * \brief Emitted when an adapter.describeDataPoint response has been received.
+     * \param result The full result object (valid, fields, description or error).
+     */
+    void describeDataPointResult(QJsonObject result);
+
+    /*!
+     * \brief Emitted when an adapter.validateDataPoint response has been received.
+     * \param valid Whether the expression is valid.
+     * \param error Human-readable error message when valid is false; empty otherwise.
+     */
+    void validateDataPointResult(bool valid, QString error);
+
+    /*!
+     * \brief Emitted when an adapter.buildExpression response has been received.
+     * \param expression The constructed data point expression string (e.g. \c ${h0:f32b}).
+     */
+    void buildExpressionResult(QString expression);
+
+    /*!
+     * \brief Emitted when an adapter.expressionHelp response has been received.
+     * \param helpText HTML string describing expression syntax.
+     */
+    void expressionHelpResult(QString helpText);
+
+private slots:
+    void onResponseReceived(int id, const QString& method, const QJsonValue& result);
+    void onErrorReceived(int id, const QString& method, const QJsonObject& error);
+    void onProcessError(const QString& message);
+    void onProcessFinished();
+    void onHandshakeTimeout();
+    void onNotificationReceived(QString method, QJsonValue params);
+
+private:
+    enum class State
+    {
+        IDLE,
+        INITIALIZING,
+        DESCRIBING,
+        AWAITING_CONFIG,
+        CONFIGURING,
+        STARTING,
+        ACTIVE,
+        ACTIVE_DEGRADED,  /*!< adapter.configure or adapter.start was rejected, or the adapter's
+                               protocol version is incompatible: the process stays alive, but
+                               never received a working config, so
+                               requestReadData()/requestStatus() answer locally instead of
+                               contacting it. isActive() is still true, but stopSession() skips
+                               adapter.stop (no real session exists to tell the adapter to stop)
+                               and transitions to AWAITING_CONFIG locally instead. */
+        STOPPING_SESSION, /*!< adapter.stop sent; adapter stays alive, transitioning to AWAITING_CONFIG */
+        STOPPING          /*!< process is being force-killed */
+    };
+
+    //! Contract violations noticed while decoding one adapter.readData result.
+    struct ReadDataIssues
+    {
+        bool unrecognisedState{ false };
+        bool malformedPoint{ false };
+        QStringList newUnknownFlagIds;
+    };
+
+    void handleLifecycleResponse(int id, const QString& method, const QJsonObject& result);
+    bool consumeAuxResponse(const QString& method, int id);
+    ResultDoubleList invalidResults() const;
+    void degradeSession(const QString& diagnosticMessage);
+    void announceIncompatibleSession();
+    bool isAuxRequestRefused(const char* requestName) const;
+    ResultDoubleList decodeReadDataResult(const QJsonObject& result);
+    ResultDouble decodeDataPoint(const QJsonValue& entry, ReadDataIssues& issues);
+
+    static constexpr int cHandshakeTimeoutMs = 10000;
+
+    State _state{ State::IDLE };
+
+    QString _adapterId;
+    std::unique_ptr<AdapterProcess> _pProcess;
+    QTimer _handshakeTimer;
+    int _handshakeTimeoutMs;
+    QJsonObject _pendingConfig;
+    QStringList _pendingExpressions;
+    QMap<QString, int> _pendingAuxRequests;
+
+    //! Why the adapter's protocol version is not usable; empty when it matches. Kept until the
+    //! next handshake, so no later session can configure or start an incompatible adapter.
+    QString _incompatibilityReason;
+    bool _incompatibleAnnouncePending{ false };
+
+    //! Guard against repeating the same adapter.readData decode diagnostic on every poll cycle;
+    //! reset when a new session is configured.
+    bool _reportedUnrecognisedReadDataState{ false };
+    bool _reportedMalformedReadDataPoint{ false };
+    bool _reportedReadDataCountMismatch{ false };
+    QSet<QString> _reportedUnknownFlagIds;
+};
+
+#endif // ADAPTERCLIENT_H

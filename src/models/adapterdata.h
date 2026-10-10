@@ -1,0 +1,142 @@
+#ifndef ADAPTERDATA_H
+#define ADAPTERDATA_H
+
+#include <QJsonObject>
+#include <QString>
+#include <QStringList>
+
+/*!
+ * \brief Parsed fields of an adapter.describe "license" object.
+ *
+ * Mirrors the fields documented for the license object in the adapter spec.
+ * Fields not applicable to the current \a state are left empty.
+ */
+struct AdapterLicenseInfo
+{
+    //! \brief Parsed form of the license object's "state" field.
+    enum class State
+    {
+        Unknown, //!< No license was reported, or the raw state was not recognized.
+        Valid,
+        Invalid,
+        NotFound
+    };
+
+    //! \brief Convert the raw "state" string from the license object into a \a State.
+    static State stateFromString(const QString& state);
+
+    State state{ State::Unknown };
+    QString path;
+    QString reason;
+    QString customer;
+    QString email;
+    QString licenseId;
+    QString expires;
+};
+
+/*!
+ * \brief Holds adapter describe metadata, data point schema, and opaque configuration.
+ *
+ * Stores the result of an adapter.describe response (name, version, schema,
+ * defaults, capabilities), the data point schema from adapter.dataPointSchema,
+ * and the current adapter configuration.
+ * The core application treats all adapter-specific JSON as opaque — it never
+ * interprets adapter-specific fields.
+ */
+class AdapterData
+{
+
+public:
+    explicit AdapterData();
+    ~AdapterData() = default;
+
+    void setName(const QString& name);
+    void setVersion(const QString& version);
+    void setConfigVersion(int configVersion);
+    void setSchema(const QJsonObject& schema);
+    void setDefaults(const QJsonObject& defaults);
+    void setCapabilities(const QJsonObject& capabilities);
+    void setLicense(const QJsonObject& license);
+    void setCurrentConfig(const QJsonObject& config);
+    void setHasStoredConfig(bool hasStoredConfig);
+    void setDataPointSchema(const QJsonObject& schema);
+
+    QString name() const;
+    QString version() const;
+    int configVersion() const;
+    int protocolVersion() const;
+    QJsonObject schema() const;
+    QJsonObject defaults() const;
+    QJsonObject capabilities() const;
+    bool isMbcCompatible() const;
+
+    bool reportsQuality() const;
+    QStringList qualityFlags() const;
+    QString qualityProtocolName(const QString& id) const;
+    QJsonObject license() const;
+    AdapterLicenseInfo licenseInfo() const;
+    QJsonObject currentConfig() const;
+    bool hasStoredConfig() const;
+    QJsonObject dataPointSchema() const;
+
+    /*!
+     * \brief Populate describe metadata from an adapter.describe response.
+     * \param describeResult The full JSON object returned by adapter.describe.
+     */
+    void updateFromDescribe(const QJsonObject& describeResult);
+
+    /*!
+     * \brief Return the stored or default configuration, for UI display.
+     * \return The stored config if available, otherwise the defaults from describe.
+     */
+    QJsonObject effectiveConfig() const;
+
+    /*!
+     * \brief Return the maximum number of devices from the schema's devices.maxItems.
+     * \return The maxItems value, or INT_MAX if not specified or negative.
+     */
+    int maxDevicesFromSchema() const;
+
+    /*!
+     * \brief Return the maximum number of devices from capabilities.maxDevices.
+     * \return The maxDevices value, or INT_MAX if not specified or negative.
+     */
+    int maxDevicesFromCapabilities() const;
+
+    int maxRegisters() const;
+
+    /*!
+     * \brief Return the effective device limit currently in force for this adapter.
+     * \return The smaller of maxDevicesFromSchema() and maxDevicesFromCapabilities(), since
+     * both are legitimate caps for different reasons: the schema's maxItems is a fixed
+     * structural maximum, while capabilities.maxDevices is the live, license-aware limit
+     * actually enforced by adapter.configure.
+     */
+    int maxDevices() const;
+
+    /*!
+     * \brief Return the configuration to actually send to adapter.configure.
+     * \return effectiveConfig() with its "devices" array capped to maxDevices(), so
+     * the adapter subprocess is never sent more devices than it currently allows. UI code
+     * that needs to show every configured device to the user (even ones beyond the adapter's
+     * current limit) should use effectiveConfig() instead.
+     */
+    QJsonObject configForWire() const;
+
+private:
+    int capabilityLimit(const QString& key) const;
+
+    QString _name;
+    QString _version;
+    int _configVersion{ 0 };
+    int _protocolVersion{ 0 };
+    QJsonObject _schema;
+    QJsonObject _defaults;
+    QJsonObject _capabilities;
+    QJsonObject _license;
+    QJsonObject _currentConfig;
+    bool _hasStoredConfig{ false };
+    QJsonObject _dataPointSchema;
+};
+
+#endif // ADAPTERDATA_H

@@ -1,0 +1,353 @@
+
+#include "adapterdata.h"
+
+#include <QJsonArray>
+#include <QSet>
+
+#include <algorithm>
+#include <climits>
+
+AdapterData::AdapterData() = default;
+
+void AdapterData::setName(const QString& name)
+{
+    _name = name;
+}
+
+void AdapterData::setVersion(const QString& version)
+{
+    _version = version;
+}
+
+void AdapterData::setConfigVersion(int configVersion)
+{
+    _configVersion = configVersion;
+}
+
+void AdapterData::setSchema(const QJsonObject& schema)
+{
+    _schema = schema;
+}
+
+void AdapterData::setDefaults(const QJsonObject& defaults)
+{
+    _defaults = defaults;
+}
+
+void AdapterData::setCapabilities(const QJsonObject& capabilities)
+{
+    _capabilities = capabilities;
+}
+
+void AdapterData::setLicense(const QJsonObject& license)
+{
+    _license = license;
+}
+
+void AdapterData::setCurrentConfig(const QJsonObject& config)
+{
+    _currentConfig = config;
+}
+
+void AdapterData::setHasStoredConfig(bool hasStoredConfig)
+{
+    _hasStoredConfig = hasStoredConfig;
+}
+
+//! \brief Sets the data point schema received from adapter.dataPointSchema.
+//! \param schema The full data point schema JSON object.
+void AdapterData::setDataPointSchema(const QJsonObject& schema)
+{
+    _dataPointSchema = schema;
+}
+
+QString AdapterData::name() const
+{
+    return _name;
+}
+
+QString AdapterData::version() const
+{
+    return _version;
+}
+
+int AdapterData::configVersion() const
+{
+    return _configVersion;
+}
+
+int AdapterData::protocolVersion() const
+{
+    return _protocolVersion;
+}
+
+QJsonObject AdapterData::schema() const
+{
+    return _schema;
+}
+
+QJsonObject AdapterData::defaults() const
+{
+    return _defaults;
+}
+
+QJsonObject AdapterData::capabilities() const
+{
+    return _capabilities;
+}
+
+bool AdapterData::isMbcCompatible() const
+{
+    return _capabilities.value("mbcCompatible").toBool();
+}
+
+/*!
+ * \brief Returns whether this adapter may report data-quality detail flags.
+ * \return True when capabilities.quality is present in the last adapter.describe response.
+ */
+bool AdapterData::reportsQuality() const
+{
+    return _capabilities.value("quality").isObject();
+}
+
+/*!
+ * \brief Returns the data-quality detail flag ids this adapter may report.
+ * \return capabilities.quality.flags, or an empty list when reportsQuality() is false.
+ */
+QStringList AdapterData::qualityFlags() const
+{
+    QStringList flags;
+    const QJsonArray flagsArray = _capabilities.value("quality").toObject().value("flags").toArray();
+    for (const auto& flag : flagsArray)
+    {
+        flags.append(flag.toString());
+    }
+    return flags;
+}
+
+/*!
+ * \brief Returns the adapter's own protocol mnemonic for a data-quality flag id.
+ * \param id A flag id, as returned by qualityFlags().
+ * \return capabilities.quality.protocolNames[id] (e.g. "SB" for "substituted"), or an empty string
+ * when not declared.
+ */
+QString AdapterData::qualityProtocolName(const QString& id) const
+{
+    const QJsonObject protocolNames = _capabilities.value("quality").toObject().value("protocolNames").toObject();
+    return protocolNames.value(id).toString();
+}
+
+QJsonObject AdapterData::license() const
+{
+    return _license;
+}
+
+//! \brief Convert the raw "state" string from the license object into a \a State.
+//! \return The matching \a State, or State::Unknown if the string is not recognized.
+AdapterLicenseInfo::State AdapterLicenseInfo::stateFromString(const QString& state)
+{
+    if (state == "valid")
+    {
+        return State::Valid;
+    }
+    if (state == "invalid")
+    {
+        return State::Invalid;
+    }
+    if (state == "notFound")
+    {
+        return State::NotFound;
+    }
+    return State::Unknown;
+}
+
+//! \brief Parses the raw license JSON into its known fields.
+//! \return An AdapterLicenseInfo with empty fields if no license was reported.
+AdapterLicenseInfo AdapterData::licenseInfo() const
+{
+    AdapterLicenseInfo info;
+    info.state = AdapterLicenseInfo::stateFromString(_license.value("state").toString());
+    info.path = _license.value("path").toString();
+    info.reason = _license.value("reason").toString();
+    info.customer = _license.value("customer").toString();
+    info.email = _license.value("email").toString();
+    info.licenseId = _license.value("licenseId").toString();
+    info.expires = _license.value("expires").toString();
+    return info;
+}
+
+QJsonObject AdapterData::currentConfig() const
+{
+    return _currentConfig;
+}
+
+bool AdapterData::hasStoredConfig() const
+{
+    return _hasStoredConfig;
+}
+
+//! \brief Returns the data point schema set via setDataPointSchema.
+//! \return The data point schema JSON object, or an empty object if not yet set.
+QJsonObject AdapterData::dataPointSchema() const
+{
+    return _dataPointSchema;
+}
+
+void AdapterData::updateFromDescribe(const QJsonObject& describeResult)
+{
+    _name = describeResult.value("name").toString();
+    _version = describeResult.value("version").toString();
+    _configVersion = describeResult.value("configVersion").toInt(0);
+    _protocolVersion = describeResult.value("protocolVersion").toInt(0);
+    _schema = describeResult.value("schema").toObject();
+    _defaults = describeResult.value("defaults").toObject();
+    _capabilities = describeResult.value("capabilities").toObject();
+    _license = describeResult.value("license").toObject();
+}
+
+int AdapterData::maxDevicesFromSchema() const
+{
+    const QJsonObject devicesSchema = _schema.value("properties").toObject().value("devices").toObject();
+    if (!devicesSchema.contains("maxItems"))
+    {
+        return INT_MAX;
+    }
+
+    /* A negative or non-numeric maxItems is invalid schema data; treat it as unbounded rather
+     * than risk truncating every configured device or hanging the removal loop in configForWire(). */
+    const int maxItems = devicesSchema.value("maxItems").toInt(INT_MAX);
+    return maxItems >= 0 ? maxItems : INT_MAX;
+}
+
+int AdapterData::maxDevicesFromCapabilities() const
+{
+    return capabilityLimit("maxDevices");
+}
+
+/*!
+ * \brief Return the maximum number of data points the adapter currently accepts per session.
+ * \return capabilities.maxRegisters, or INT_MAX when the adapter reports no such limit.
+ *
+ * The adapter only reports this capability while it enforces a cap (for example when no valid
+ * license is found); an absent key therefore means unlimited. The limit is enforced by the
+ * adapter itself when a session starts, so it is only used to inform the user.
+ */
+int AdapterData::maxRegisters() const
+{
+    return capabilityLimit("maxRegisters");
+}
+
+/*!
+ * \brief Return a max<Noun> limit from the capabilities object.
+ * \param key The capability key holding the limit.
+ * \return The reported limit, or INT_MAX when the key is absent or holds an invalid value.
+ *
+ * A negative or non-numeric limit is invalid capability data; it is treated as unbounded rather
+ * than risk truncating every configured item or warning the user about a limit that is not real.
+ */
+int AdapterData::capabilityLimit(const QString& key) const
+{
+    if (!_capabilities.contains(key))
+    {
+        return INT_MAX;
+    }
+
+    const int limit = _capabilities.value(key).toInt(INT_MAX);
+    return limit >= 0 ? limit : INT_MAX;
+}
+
+int AdapterData::maxDevices() const
+{
+    return std::min(maxDevicesFromSchema(), maxDevicesFromCapabilities());
+}
+
+QJsonObject AdapterData::effectiveConfig() const
+{
+    if (!_hasStoredConfig)
+    {
+        return _defaults;
+    }
+
+    /* Use defaults as the base so that keys added to the adapter after a project file was
+     * saved (e.g. 'general') are automatically filled in rather than left absent.
+     * This is a shallow merge: each top-level key in _currentConfig replaces the
+     * corresponding key in result entirely. Nested objects are not merged — if a stored
+     * key holds a QJsonObject, the whole sub-object is taken from _currentConfig and none
+     * of the default's nested keys are backfilled. A recursive merge would be needed if
+     * per-key deep backfilling is ever required (see result/_currentConfig/_defaults here). */
+    QJsonObject result = _defaults;
+    for (auto it = _currentConfig.constBegin(); it != _currentConfig.constEnd(); ++it)
+    {
+        result.insert(it.key(), it.value());
+    }
+    return result;
+}
+
+/*! \brief Remove entries repeating a device id already seen, keeping the first of each.
+ *
+ * First wins, matching the direction of configForWire()'s cap, which drops from the end, and
+ * SettingsModel::reconcileDevicesWithAdapters(), which awards a contested id to the first
+ * claimant. Entries carrying no usable id are passed through untouched - only a genuine repeat
+ * is dropped.
+ * \param devices  The device array to filter.
+ * \return The array with repeated device ids removed.
+ */
+static QJsonArray removeDuplicateDeviceIds(const QJsonArray& devices)
+{
+    QJsonArray result;
+    QSet<int> seenIds;
+
+    for (const auto& device : devices)
+    {
+        const int id = device.toObject().value("id").toInt(-1);
+        if (id >= 0)
+        {
+            if (seenIds.contains(id))
+            {
+                continue;
+            }
+            seenIds.insert(id);
+        }
+        result.append(device);
+    }
+    return result;
+}
+
+/*! \brief Build the config sent to the adapter subprocess.
+ *
+ * Two adjustments are made to the stored config, and the order matters. Duplicate device ids are
+ * dropped first: a project file can carry the same id twice (the legacy XML format synthesises
+ * ids from <connectionid>, which defaults to 0 when the tag is absent), and leaving the repeat in
+ * would both tell the adapter about more devices than the model holds and let it consume one of
+ * the adapter's device slots, pushing a distinct device out of the cap below.
+ *
+ * The stored config itself keeps the duplicate: applyAdapterSettings() round-trips adapter keys
+ * this application does not interpret, and AdapterDeviceSettings::acceptValues() rewrites the
+ * array from the dialog's tabs, so a stored duplicate clears the first time the user accepts the
+ * settings dialog.
+ * \return The effective config with duplicate devices removed and the device count capped.
+ */
+QJsonObject AdapterData::configForWire() const
+{
+    QJsonObject result = effectiveConfig();
+
+    const QJsonValue devicesValue = result.value("devices");
+    if (!devicesValue.isArray())
+    {
+        return result;
+    }
+
+    QJsonArray devices = removeDuplicateDeviceIds(devicesValue.toArray());
+
+    const int maxDevicesLimit = maxDevices();
+    if (maxDevicesLimit != INT_MAX)
+    {
+        while (devices.size() > maxDevicesLimit)
+        {
+            devices.removeLast();
+        }
+    }
+
+    result["devices"] = devices;
+    return result;
+}

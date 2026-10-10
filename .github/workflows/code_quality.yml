@@ -1,0 +1,66 @@
+name: Code quality analysis
+
+on:
+  pull_request:
+    # Sequence of patterns matched against refs/heads
+    branches:
+      - master
+  push:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    container: docker://jgeudens/qt-linux:6.8.3_build_3
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.0
+
+    - name: Start display server
+      run: bash /start.sh &
+
+    - name: configure safe directory for git
+      run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      
+    - name: Prepare environment for Ninja build with coverage
+      run: |
+        cmake . -GNinja -DUSE_GCOV=ON
+        ninja
+
+    - name: Generate gcovr coverage report
+      run: |
+        ctest
+        gcovr --gcov-ignore-parse-errors --cobertura cobertura.xml
+
+    - name: Run codacy-coverage-reporter
+      uses: codacy/codacy-coverage-reporter-action@v1
+      with:
+        api-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+        language: 'CPP'
+        coverage-reports: cobertura.xml
+      env:
+        PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+      if: ${{ !!env.PROJECT_TOKEN }}
+
+  clazy:
+    runs-on: ubuntu-latest
+    container: docker://jgeudens/qt-linux:6.8.3_build_3
+    steps:
+    - uses: actions/checkout@v7.0.0
+
+    - name: Configure safe directory for git
+      run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+    - name: Run clazy
+      run: bash scripts/run_clazy.sh
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    container: docker://jgeudens/qt-linux:6.8.3_build_3
+    steps:
+    - uses: actions/checkout@v7.0.0
+
+    - name: Configure safe directory for git
+      run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+    - name: Run clang-tidy
+      run: bash scripts/run_clang_tidy.sh

@@ -1,0 +1,95 @@
+#ifndef TST_ADAPTERCLIENT_H
+#define TST_ADAPTERCLIENT_H
+
+#include <QObject>
+
+class TestAdapterClient : public QObject
+{
+    Q_OBJECT
+private slots:
+    void init();
+    void cleanup();
+
+    void lifecycleInitializeToStart();
+    void describeSignalEmitted();
+    void readDataValidResults();
+    void readDataDecodesAllStatesAndFlags();
+    void readDataUnrecognisedStateTreatedAsInvalidWithDiagnostic();
+    void readDataUnknownFlagIdEmitsDiagnosticOnce();
+    void initializeParamsIncludeProtocolVersion();
+    void describeProtocolVersionMismatchNeverConfiguresAdapter();
+    void incompatibleAdapterStoppedBeforeAnnounceNeverAnnounces();
+    void incompatibleAdapterStopAndRestartAnnouncesOnce();
+    void incompatibleAdapterRefusesAuxRequests();
+    void readDataUsablePointWithoutValueTreatedAsInvalid();
+    void readDataGoodWithFlagsIsPromotedToDegraded();
+    void readDataUnknownFlagDiagnosticRepeatsInNewSession();
+    void readDataMissingDataPointsPaddedWithInvalid();
+    void readDataSurplusDataPointsIgnored();
+    void readDataMissingDataPointsArrayAllInvalid();
+    void readDataCountMismatchDiagnosticRepeatsInNewSession();
+    void readDataEmptyDataPoints();
+    void requestStatusEmitsSignal();
+    void errorResponseEmitsSessionError();
+    void unexpectedResponseEmitsNoSignals();
+    void notificationIgnored();
+    void diagnosticNotificationForwarded();
+    void diagnosticNotificationDebugLevel();
+    void diagnosticMalformedParams();
+    void processErrorEmitsSessionError();
+    void stopSessionDuringStarting();
+    void stopSessionDuringLifecycle();
+    void doubleStopSession();
+    void requestReadDataWhenNotActive();
+    void nonObjectResultEmitsSessionError();
+    void errorDuringAdapterStopSuppressed();
+    void adapterStopNoAckTimesOutToSessionStopped();
+    void awaitingConfigPausesBeforeConfigure();
+    void stopSessionDuringAwaitingConfig();
+    void adapterStopAckEmitsSessionStoppedImmediately();
+    void processErrorDuringStoppingNoSessionError();
+    void processErrorDuringStoppingThenProcessFinished();
+
+    void stopSessionSendsAdapterStop();
+    void adapterReadyEmittedAfterDescribe();
+    void adapterReadyEmittedAfterStop();
+    void canProvideConfigAfterStop();
+    void isReadyIsIdleAndIsActiveAccessors();
+
+    void requestDataPointSchemaEmitsSignal();
+    void requestDataPointSchemaInWrongStateIgnored();
+    void describeDataPointInAwaitingConfig();
+    void describeDataPointInActiveState();
+    void describeDataPointInWrongStateIgnored();
+    void validateDataPointValid();
+    void validateDataPointInvalid();
+    void validateDataPointInActiveState();
+    void validateDataPointInWrongStateIgnored();
+
+    void buildExpressionRequestAndResponse();
+    void buildExpressionInActiveState();
+    void buildExpressionInWrongStateIgnored();
+    void buildExpressionOmitsDefaultDataType();
+    void buildExpressionOmitsDefaultDeviceId();
+
+    void expressionHelpRequestAndResponse();
+    void expressionHelpInActiveState();
+    void expressionHelpInWrongStateIgnored();
+    void expressionHelpErrorIsNonFatal();
+
+    void readDataErrorIsNonFatal();
+    void readDataErrorInNonActiveStateIsIgnored();
+    void readDataErrorInIdleStateIsIgnored();
+
+    void startErrorIsNonFatal();
+    void startErrorAllowsRetryAfterStop();
+    void requestStatusInDegradedSessionReturnsFalseLocally();
+
+    void configureErrorIsNonFatal();
+    void configureErrorAllowsRetryAfterStop();
+    void requestStatusInDegradedSessionAfterConfigureErrorReturnsFalseLocally();
+    void auxRequestsWorkInDegradedSession();
+    void auxRequestErrorsAreNonFatalInDegradedSession();
+};
+
+#endif // TST_ADAPTERCLIENT_H

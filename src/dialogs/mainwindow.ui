@@ -1,0 +1,551 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1018</width>
+    <height>641</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QVBoxLayout" name="verticalLayout_2" stretch="1">
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+    <item>
+     <widget class="ScopePlot" name="customPlot" native="true">
+      <property name="minimumSize">
+       <size>
+        <width>10</width>
+        <height>0</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menuBar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1018</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>&amp;File</string>
+    </property>
+    <widget class="QMenu" name="menuMostRecentProject">
+     <property name="title">
+      <string>Open Recent Project</string>
+     </property>
+    </widget>
+    <addaction name="actionOpenProjectFile"/>
+    <addaction name="menuMostRecentProject"/>
+    <addaction name="actionReloadProjectFile"/>
+    <addaction name="actionOpenDataFile"/>
+    <addaction name="actionImportFromMbcFile"/>
+    <addaction name="separator"/>
+    <addaction name="actionSaveProjectFile"/>
+    <addaction name="actionSaveProjectFileAs"/>
+    <addaction name="actionSaveDataFile"/>
+    <addaction name="actionExportImage"/>
+    <addaction name="separator"/>
+    <addaction name="actionExit"/>
+   </widget>
+   <widget class="QMenu" name="menuProject">
+    <property name="title">
+     <string>&amp;Project</string>
+    </property>
+    <addaction name="separator"/>
+    <addaction name="actionSettings"/>
+    <addaction name="actionRegisterSettings"/>
+    <addaction name="separator"/>
+    <addaction name="actionClearData"/>
+    <addaction name="actionManageNotes"/>
+   </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title">
+     <string>&amp;Help</string>
+    </property>
+    <addaction name="actionQuickStart"/>
+    <addaction name="separator"/>
+    <addaction name="actionUpdateAvailable"/>
+    <addaction name="actionAbout"/>
+    <addaction name="actionOnlineDocumentation"/>
+    <addaction name="actionDiagnostic"/>
+   </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>&amp;View</string>
+    </property>
+    <widget class="QMenu" name="menuShowHide">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="title">
+      <string>&amp;Show/Hide</string>
+     </property>
+    </widget>
+    <addaction name="menuShowHide"/>
+    <addaction name="separator"/>
+    <addaction name="actionHighlightSamplePoints"/>
+    <addaction name="separator"/>
+    <addaction name="separator"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuProject"/>
+   <addaction name="menuView"/>
+   <addaction name="menuHelp"/>
+  </widget>
+  <widget class="QToolBar" name="toolBar">
+   <property name="windowTitle">
+    <string>toolBar</string>
+   </property>
+   <property name="iconSize">
+    <size>
+     <width>24</width>
+     <height>24</height>
+    </size>
+   </property>
+   <property name="toolButtonStyle">
+    <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="actionSettings"/>
+   <addaction name="actionRegisterSettings"/>
+   <addaction name="separator"/>
+   <addaction name="actionStart"/>
+   <addaction name="actionStop"/>
+   <addaction name="separator"/>
+   <addaction name="actionZoom"/>
+   <addaction name="actionToggleMarkers"/>
+   <addaction name="actionExportImage"/>
+  </widget>
+  <widget class="QDockWidget" name="scaleOptionsDock">
+   <property name="sizePolicy">
+    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+     <horstretch>0</horstretch>
+     <verstretch>0</verstretch>
+    </sizepolicy>
+   </property>
+   <property name="acceptDrops">
+    <bool>false</bool>
+   </property>
+   <property name="floating">
+    <bool>false</bool>
+   </property>
+   <property name="features">
+    <set>QDockWidget::DockWidgetFeature::DockWidgetFloatable|QDockWidget::DockWidgetFeature::DockWidgetMovable|QDockWidget::DockWidgetFeature::DockWidgetVerticalTitleBar</set>
+   </property>
+   <property name="allowedAreas">
+    <set>Qt::DockWidgetArea::BottomDockWidgetArea|Qt::DockWidgetArea::TopDockWidgetArea</set>
+   </property>
+   <property name="windowTitle">
+    <string notr="true">Scale options</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>8</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents">
+    <property name="sizePolicy">
+     <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+      <horstretch>0</horstretch>
+      <verstretch>0</verstretch>
+     </sizepolicy>
+    </property>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <property name="spacing">
+      <number>0</number>
+     </property>
+     <property name="leftMargin">
+      <number>0</number>
+     </property>
+     <property name="topMargin">
+      <number>0</number>
+     </property>
+     <property name="rightMargin">
+      <number>0</number>
+     </property>
+     <property name="bottomMargin">
+      <number>0</number>
+     </property>
+     <item>
+      <widget class="ScaleDock" name="scaleOptions" native="true"/>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QDockWidget" name="markerInfoDock">
+   <property name="minimumSize">
+    <size>
+     <width>80</width>
+     <height>68</height>
+    </size>
+   </property>
+   <property name="features">
+    <set>QDockWidget::DockWidgetFeature::DockWidgetFloatable|QDockWidget::DockWidgetFeature::DockWidgetMovable</set>
+   </property>
+   <property name="allowedAreas">
+    <set>Qt::DockWidgetArea::LeftDockWidgetArea|Qt::DockWidgetArea::RightDockWidgetArea</set>
+   </property>
+   <property name="windowTitle">
+    <string>Markers</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>2</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents_3">
+    <layout class="QVBoxLayout" name="verticalLayout_5">
+     <property name="spacing">
+      <number>6</number>
+     </property>
+     <property name="leftMargin">
+      <number>9</number>
+     </property>
+     <property name="topMargin">
+      <number>9</number>
+     </property>
+     <property name="rightMargin">
+      <number>9</number>
+     </property>
+     <property name="bottomMargin">
+      <number>9</number>
+     </property>
+     <item>
+      <widget class="MarkerInfo" name="markerInfo">
+       <property name="frameShape">
+        <enum>QFrame::Shape::Box</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Sunken</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="verticalSpacer_2">
+       <property name="orientation">
+        <enum>Qt::Orientation::Vertical</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>20</width>
+         <height>433</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QDockWidget" name="legendDock">
+   <property name="features">
+    <set>QDockWidget::DockWidgetFeature::DockWidgetFloatable|QDockWidget::DockWidgetFeature::DockWidgetMovable</set>
+   </property>
+   <property name="allowedAreas">
+    <set>Qt::DockWidgetArea::LeftDockWidgetArea|Qt::DockWidgetArea::RightDockWidgetArea</set>
+   </property>
+   <property name="windowTitle">
+    <string>Legend</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>2</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents_2">
+    <layout class="QVBoxLayout" name="verticalLayout">
+     <item>
+      <widget class="Legend" name="legend">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::NoFrame</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <action name="actionExit">
+   <property name="text">
+    <string>&amp;Exit</string>
+   </property>
+  </action>
+  <action name="actionStart">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/circle-play.svg</normaloff>:/menu_icon/icons/circle-play.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Start logging</string>
+   </property>
+   <property name="iconText">
+    <string>Start</string>
+   </property>
+  </action>
+  <action name="actionStop">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/circle-stop.svg</normaloff>:/menu_icon/icons/circle-stop.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Stop &amp;logging</string>
+   </property>
+   <property name="iconText">
+    <string>Stop</string>
+   </property>
+   <property name="toolTip">
+    <string>Stop logging</string>
+   </property>
+  </action>
+  <action name="actionSaveDataFile">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Save Data &amp;File As...</string>
+   </property>
+  </action>
+  <action name="actionOpenProjectFile">
+   <property name="text">
+    <string>&amp;Open Project...</string>
+   </property>
+   <property name="toolTip">
+    <string>Open Project File</string>
+   </property>
+  </action>
+  <action name="actionExportImage">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/camera.svg</normaloff>:/menu_icon/icons/camera.svg</iconset>
+   </property>
+   <property name="text">
+    <string>E&amp;xport Image As...</string>
+   </property>
+   <property name="iconText">
+    <string>Screenshot</string>
+   </property>
+  </action>
+  <action name="actionAbout">
+   <property name="text">
+    <string>&amp;About...</string>
+   </property>
+  </action>
+  <action name="actionReloadProjectFile">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Reload Project</string>
+   </property>
+  </action>
+  <action name="actionOpenDataFile">
+   <property name="text">
+    <string>Open &amp;Data File...</string>
+   </property>
+   <property name="iconText">
+    <string>Open Data File</string>
+   </property>
+   <property name="toolTip">
+    <string>Open Data File</string>
+   </property>
+  </action>
+  <action name="actionImportFromMbcFile">
+   <property name="text">
+    <string>&amp;Import MBC File...</string>
+   </property>
+  </action>
+  <action name="actionHighlightSamplePoints">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Highlight Sample Points</string>
+   </property>
+  </action>
+  <action name="actionClearData">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Clear Data</string>
+   </property>
+  </action>
+  <action name="actionRegisterSettings">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/list.svg</normaloff>:/menu_icon/icons/list.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Signals</string>
+   </property>
+   <property name="iconText">
+    <string>Signals</string>
+   </property>
+  </action>
+  <action name="actionToggleMarkers">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/align-horizontal-space-around.svg</normaloff>:/menu_icon/icons/align-horizontal-space-around.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Toggle &amp;Markers</string>
+   </property>
+   <property name="iconText">
+    <string>Markers</string>
+   </property>
+   <property name="toolTip">
+    <string>Toggle Markers</string>
+   </property>
+  </action>
+  <action name="actionSaveProjectFileAs">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Save Project As...</string>
+   </property>
+  </action>
+  <action name="actionDiagnostic">
+   <property name="text">
+    <string>&amp;Diagnostic logs...</string>
+   </property>
+  </action>
+  <action name="actionAddNote">
+   <property name="text">
+    <string>Add Note...</string>
+   </property>
+  </action>
+  <action name="actionManageNotes">
+   <property name="text">
+    <string>&amp;Edit Notes...</string>
+   </property>
+  </action>
+  <action name="actionZoom">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/zoom-in.svg</normaloff>:/menu_icon/icons/zoom-in.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Zoom</string>
+   </property>
+   <property name="toolTip">
+    <string>Draw zoom rectangle</string>
+   </property>
+  </action>
+  <action name="actionUpdateAvailable">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/bell-ring.svg</normaloff>:/menu_icon/icons/bell-ring.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Update</string>
+   </property>
+   <property name="iconText">
+    <string>Update</string>
+   </property>
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionOnlineDocumentation">
+   <property name="text">
+    <string>&amp;Online documentation...</string>
+   </property>
+  </action>
+  <action name="actionSaveProjectFile">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Save &amp;Project</string>
+   </property>
+  </action>
+  <action name="actionSettings">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/menu_icon/icons/settings.svg</normaloff>:/menu_icon/icons/settings.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Settings...</string>
+   </property>
+  </action>
+  <action name="actionQuickStart">
+   <property name="text">
+    <string>&amp;Quick Start...</string>
+   </property>
+  </action>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <customwidgets>
+  <customwidget>
+   <class>ScopePlot</class>
+   <extends>QWidget</extends>
+   <header>graphview/scopeplot.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>Legend</class>
+   <extends>QFrame</extends>
+   <header>customwidgets/legend.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>MarkerInfo</class>
+   <extends>QFrame</extends>
+   <header>customwidgets/markerinfo.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ScaleDock</class>
+   <extends>QWidget</extends>
+   <header>customwidgets/scaledock.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

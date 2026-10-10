@@ -1,0 +1,155 @@
+
+#include "tst_expressionchecker.h"
+
+#include "util/expressionchecker.h"
+
+#include <QSignalSpy>
+#include <QTest>
+
+using State = DataQuality::State;
+
+void TestExpressionChecker::init()
+{
+}
+
+void TestExpressionChecker::cleanup()
+{
+}
+
+void TestExpressionChecker::dataIsPrimed()
+{
+    ExpressionChecker checker;
+
+    QString expr("${40001} + ${40002}");
+
+    checker.setExpression(expr);
+    QCOMPARE(checker.expression(), expr);
+
+    QStringList descriptions = checker.descriptions();
+    auto expDescriptions = QStringList() << "${40001}, device id 1"
+                                         << "${40002}, device id 1";
+    QCOMPARE(descriptions, expDescriptions);
+
+    QCOMPARE(checker.requiredValueCount(), 2);
+}
+
+void TestExpressionChecker::addressesMatchExpression()
+{
+    ExpressionChecker checker;
+
+    checker.setExpression("${40001} + ${40002}");
+
+    QStringList addrs = checker.addresses();
+    auto expAddresses = QStringList() << "${40001}" << "${40002}";
+    QCOMPARE(addrs, expAddresses);
+}
+
+void TestExpressionChecker::deviceIdsMatchAddresses()
+{
+    ExpressionChecker checker;
+
+    checker.setExpression("${40001} + ${40002@2}");
+
+    QCOMPARE(checker.addresses(), QStringList() << "${40001}" << "${40002@2}");
+
+    QList<deviceId_t> expDeviceIds;
+    expDeviceIds << static_cast<deviceId_t>(1) << static_cast<deviceId_t>(2);
+    QCOMPARE(checker.deviceIds(), expDeviceIds);
+}
+
+void TestExpressionChecker::expressionIsValid()
+{
+    ExpressionChecker checker;
+
+    QString expr("${40001} + ${40002}");
+    checker.setExpression(expr);
+
+    QSignalSpy spyResult(&checker, &ExpressionChecker::resultsReady);
+
+    auto resultList = ResultDoubleList() << ResultDouble(2, State::Good) << ResultDouble(1, State::Good);
+    checker.checkWithValues(resultList);
+
+    QCOMPARE(spyResult.count(), 1);
+
+    QList<QVariant> arguments = spyResult.takeFirst();
+    QCOMPARE(arguments.count(), 1);
+    QVERIFY(arguments.first().toBool());
+
+    QVERIFY(checker.isValid());
+    QCOMPARE(checker.result(), 3);
+    QCOMPARE(checker.strError(), "");
+    QCOMPARE(checker.errorPos(), -1);
+    QVERIFY(checker.syntaxError() == false);
+}
+
+void TestExpressionChecker::expressionHasSyntaxError()
+{
+    ExpressionChecker checker;
+
+    QString expr("${40001}++");
+    checker.setExpression(expr);
+
+    QSignalSpy spyResult(&checker, &ExpressionChecker::resultsReady);
+
+    auto resultList = ResultDoubleList() << ResultDouble(2, State::Good);
+    checker.checkWithValues(resultList);
+
+    QCOMPARE(spyResult.count(), 1);
+
+    QList<QVariant> arguments = spyResult.takeFirst();
+    QCOMPARE(arguments.count(), 1);
+    QVERIFY(arguments.first().toBool() == false);
+
+    QVERIFY(checker.isValid() == false);
+    QCOMPARE(checker.result(), 0);
+    QCOMPARE(checker.strError(), "Invalid expression (error at position 11)");
+    QCOMPARE(checker.errorPos(), 11);
+    QVERIFY(checker.syntaxError());
+}
+
+void TestExpressionChecker::valueErrorIsNotSyntaxError()
+{
+    ExpressionChecker checker;
+
+    QString expr("1/${40001}");
+    checker.setExpression(expr);
+
+    QSignalSpy spyResult(&checker, &ExpressionChecker::resultsReady);
+
+    auto resultList = ResultDoubleList() << ResultDouble(0, State::Good);
+    checker.checkWithValues(resultList);
+
+    QCOMPARE(spyResult.count(), 1);
+
+    QList<QVariant> arguments = spyResult.takeFirst();
+    QCOMPARE(arguments.count(), 1);
+    QVERIFY(arguments.first().toBool() == false);
+
+    QVERIFY(checker.isValid() == false);
+    QCOMPARE(checker.result(), 0);
+    QCOMPARE(checker.strError(), "Result value is an undefined number. Check input validity.");
+    QCOMPARE(checker.errorPos(), -1);
+    QVERIFY(checker.syntaxError() == false);
+}
+
+void TestExpressionChecker::checkForDevices_allPresent()
+{
+    ExpressionChecker checker;
+    checker.setExpression(QStringLiteral("${40001} + ${40002}"));
+
+    QList<deviceId_t> devices;
+    devices << static_cast<deviceId_t>(1); // device id 1 is expected by the expression
+    QVERIFY(checker.checkForDevices(devices));
+}
+
+void TestExpressionChecker::checkForDevices_missing()
+{
+    ExpressionChecker checker;
+    checker.setExpression(QStringLiteral("${40001} + ${40002@2}"));
+
+    QList<deviceId_t> devices;
+    devices << static_cast<deviceId_t>(1); // device id 1 is expected by the expression
+    QVERIFY(!checker.checkForDevices(devices));
+}
+
+QTEST_GUILESS_MAIN(TestExpressionChecker)

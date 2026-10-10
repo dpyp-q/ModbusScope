@@ -1,0 +1,148 @@
+#include "deviceconfigtab.h"
+
+#include "customwidgets/schemaformwidget.h"
+#include "models/adapterdata.h"
+#include "models/settingsmodel.h"
+
+#include <QComboBox>
+#include <QHBoxLayout>
+#include <QJsonArray>
+#include <QLabel>
+#include <QLineEdit>
+#include <QVBoxLayout>
+
+DeviceConfigTab::DeviceConfigTab(SettingsModel* pSettingsModel,
+                                 const QString& adapterId,
+                                 const QString& deviceName,
+                                 const QJsonObject& deviceValues,
+                                 QWidget* parent)
+    : QWidget(parent),
+      _pLayout(new QVBoxLayout),
+      _pNameEdit(new QLineEdit(this)),
+      _pAdapterCombo(new QComboBox(this)),
+      _pSchemaForm(nullptr),
+      _pSettingsModel(pSettingsModel),
+      _deviceId(deviceValues.value("id").toInt(-1))
+{
+    setLayout(_pLayout);
+
+    auto* nameRow = new QHBoxLayout;
+    nameRow->addWidget(new QLabel("Name:", this));
+    nameRow->addWidget(_pNameEdit);
+    nameRow->addStretch();
+    _pLayout->addLayout(nameRow);
+
+    _pNameEdit->setText(deviceName);
+
+    auto* adapterRow = new QHBoxLayout;
+    adapterRow->addWidget(new QLabel("Protocol adapter:", this));
+    adapterRow->addWidget(_pAdapterCombo);
+    adapterRow->addStretch();
+    _pLayout->addLayout(adapterRow);
+
+    // Add stretch at the end so rebuildSchemaForm can insert before it
+    _pLayout->addStretch();
+
+    const QStringList adapterIds = pSettingsModel->adapterIds();
+    for (const auto& id : adapterIds)
+    {
+        const AdapterData* pAdapter = pSettingsModel->adapterData(id);
+        QJsonObject itemSchema =
+          pAdapter->schema().value("properties").toObject().value("devices").toObject().value("items").toObject();
+        if (!itemSchema.isEmpty())
+        {
+            _pAdapterCombo->addItem(id, id);
+        }
+    }
+
+    int idx = _pAdapterCombo->findData(adapterId);
+    if (idx >= 0)
+    {
+        _pAdapterCombo->setCurrentIndex(idx);
+    }
+
+    connect(_pNameEdit, &QLineEdit::textChanged, this, &DeviceConfigTab::onNameChanged);
+    connect(_pAdapterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &DeviceConfigTab::onAdapterChanged);
+
+    QString effectiveAdapterId = _pAdapterCombo->currentData().toString();
+    if (!effectiveAdapterId.isEmpty())
+    {
+        rebuildSchemaForm(effectiveAdapterId, deviceValues);
+    }
+}
+
+void DeviceConfigTab::onAdapterChanged(int index)
+{
+    QString newAdapterId = _pAdapterCombo->itemData(index).toString();
+    QJsonObject defaultValues;
+    const QJsonArray defaultDevices = _pSettingsModel->adapterData(newAdapterId)->defaults().value("devices").toArray();
+    if (!defaultDevices.isEmpty())
+    {
+        defaultValues = defaultDevices.first().toObject();
+    }
+
+    defaultValues.insert("id", deviceId());
+
+    rebuildSchemaForm(newAdapterId, defaultValues);
+    emit adapterChanged(newAdapterId);
+}
+
+void DeviceConfigTab::onNameChanged(const QString& name)
+{
+    emit nameChanged(name);
+}
+
+void DeviceConfigTab::rebuildSchemaForm(const QString& adapterId, const QJsonObject& deviceValues)
+{
+    if (_pSchemaForm)
+    {
+        _pLayout->removeWidget(_pSchemaForm);
+        _pSchemaForm->deleteLater();
+        _pSchemaForm = nullptr;
+    }
+
+    const AdapterData* pAdapter = _pSettingsModel->adapterData(adapterId);
+    QJsonObject devicesSchema = pAdapter->schema().value("properties").toObject().value("devices").toObject();
+    QJsonObject itemSchema = devicesSchema.value("items").toObject();
+
+    // Make the "id" field read-only since we don't support changing it after creation, and it must be present for
+    // existing devices. TODO: In the future we may want to allow editing it for new devices that haven't been saved
+    // yet, but that would require some additional handling to avoid conflicts with existing IDs.
+    QJsonObject propsObj = itemSchema.value("properties").toObject();
+    QJsonObject idProp = propsObj.value("id").toObject();
+    idProp.insert("readOnly", true);
+    propsObj.insert("id", idProp);
+    itemSchema.insert("properties", propsObj);
+
+    _pSchemaForm = new SchemaFormWidget(this);
+    _pSchemaForm->setSchema(itemSchema, deviceValues);
+
+    _pLayout->insertWidget(_pLayout->count() - 1, _pSchemaForm);
+}
+
+QJsonObject DeviceConfigTab::values() const
+{
+    QJsonObject result = _pSchemaForm ? _pSchemaForm->values() : QJsonObject();
+
+    /* The "id" field is always readOnly (see rebuildSchemaForm()), so its schema-bound widget
+     * value must never be trusted: a missing id is clamped to the widget's minimum by Qt,
+     * silently fabricating a plausible-looking id instead of preserving the invalid sentinel. */
+    result.insert("id", _deviceId);
+    return result;
+}
+
+QString DeviceConfigTab::adapterId() const
+{
+    return _pAdapterCombo->currentData().toString();
+}
+
+QString DeviceConfigTab::deviceName() const
+{
+    return _pNameEdit->text();
+}
+
+int DeviceConfigTab::deviceId() const
+{
+    return _deviceId;
+}

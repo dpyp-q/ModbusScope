@@ -1,0 +1,202 @@
+
+#include "projectfilejsonexporter.h"
+
+#include "importexport/projectfiledefinitions.h"
+#include "models/graphdatamodel.h"
+#include "models/guimodel.h"
+#include "models/settingsmodel.h"
+#include "util/util.h"
+
+#include <QJsonDocument>
+#include <QSaveFile>
+
+ProjectFileJsonExporter::ProjectFileJsonExporter(GuiModel* pGuiModel,
+                                                 SettingsModel* pSettingsModel,
+                                                 GraphDataModel* pGraphDataModel,
+                                                 QObject* parent)
+    : QObject(parent)
+{
+    _pGuiModel = pGuiModel;
+    _pSettingsModel = pSettingsModel;
+    _pGraphDataModel = pGraphDataModel;
+}
+
+/*!
+ * \brief Serialise current settings and write to \a projectFile.
+ * \param projectFile Destination file path.
+ * \param adapters    Adapter list to round-trip as-is into the file.
+ * \param devices     Generic device list to round-trip as-is into the file.
+ */
+void ProjectFileJsonExporter::exportProjectFile(const QString& projectFile,
+                                                const QList<ProjectFileData::AdapterFileSettings>& adapters,
+                                                const QList<ProjectFileData::DeviceSettings>& devices)
+{
+    QJsonObject root;
+    root.insert(ProjectFileDefinitions::cVersionKey, static_cast<int>(ProjectFileDefinitions::cCurrentJsonVersion));
+    root.insert(ProjectFileDefinitions::cAdaptersKey, createAdaptersArray(adapters));
+    root.insert(ProjectFileDefinitions::cDevicesJsonKey, createDevicesArray(devices));
+    root.insert(ProjectFileDefinitions::cLogTag, createLogObject());
+    root.insert(ProjectFileDefinitions::cScopeTag, createScopeArray());
+    root.insert(ProjectFileDefinitions::cViewTag, createViewObject());
+
+    QJsonDocument doc(root);
+    QSaveFile file(projectFile);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+        QByteArray jsonData = doc.toJson(QJsonDocument::Indented);
+        qint64 bytesWritten = file.write(jsonData);
+        if (bytesWritten == jsonData.size())
+        {
+            if (!file.commit())
+            {
+                showExportError(projectFile);
+            }
+        }
+        else
+        {
+            showExportError(projectFile);
+        }
+    }
+    else
+    {
+        showExportError(projectFile);
+    }
+}
+
+/*!
+ * \brief Build the top-level "adapters" array by round-tripping the loaded adapter data.
+ * \param adapters Adapter list parsed from the project file.
+ */
+QJsonArray ProjectFileJsonExporter::createAdaptersArray(const QList<ProjectFileData::AdapterFileSettings>& adapters)
+{
+    QJsonArray adaptersArray;
+    for (const ProjectFileData::AdapterFileSettings& adapter : std::as_const(adapters))
+    {
+        QJsonObject adapterObj;
+        adapterObj.insert(ProjectFileDefinitions::cAdapterTypeKey, adapter.type);
+        adapterObj.insert(ProjectFileDefinitions::cAdapterSettingsKey, adapter.settings);
+        adaptersArray.append(adapterObj);
+    }
+    return adaptersArray;
+}
+
+/*!
+ * \brief Build the top-level "devices" array by round-tripping the loaded generic device data.
+ * \param devices Generic device list parsed from the project file.
+ */
+QJsonArray ProjectFileJsonExporter::createDevicesArray(const QList<ProjectFileData::DeviceSettings>& devices)
+{
+    QJsonArray devicesArray;
+    for (const ProjectFileData::DeviceSettings& dev : std::as_const(devices))
+    {
+        QJsonObject adapterRef;
+        adapterRef.insert(ProjectFileDefinitions::cAdapterTypeKey, dev.adapterType);
+
+        QJsonObject devObj;
+        devObj.insert(ProjectFileDefinitions::cIdJsonKey, static_cast<int>(dev.deviceId));
+        devObj.insert(ProjectFileDefinitions::cAdapterIdKey, static_cast<int>(dev.adapterId));
+        devObj.insert(ProjectFileDefinitions::cDeviceNameTag, dev.name);
+        devObj.insert(ProjectFileDefinitions::cAdapterKey, adapterRef);
+        devicesArray.append(devObj);
+    }
+    return devicesArray;
+}
+
+/*!
+ * \brief Build the "log" object.
+ */
+QJsonObject ProjectFileJsonExporter::createLogObject()
+{
+    QJsonObject logObj;
+    logObj.insert(ProjectFileDefinitions::cPollTimeTag, static_cast<int>(_pSettingsModel->pollTime()));
+    logObj.insert(ProjectFileDefinitions::cAbsoluteTimesTag, _pSettingsModel->absoluteTimes());
+
+    QJsonObject logToFileObj;
+    logToFileObj.insert(ProjectFileDefinitions::cEnabledAttribute, _pSettingsModel->writeDuringLog());
+
+    if (_pSettingsModel->writeDuringLog() && (_pSettingsModel->writeDuringLogFile() != SettingsModel::defaultLogPath()))
+    {
+        logToFileObj.insert(ProjectFileDefinitions::cFilenameTag, _pSettingsModel->writeDuringLogFile());
+    }
+
+    logObj.insert(ProjectFileDefinitions::cLogToFileTag, logToFileObj);
+    return logObj;
+}
+
+/*!
+ * \brief Build the "scope" array of register definitions.
+ */
+QJsonArray ProjectFileJsonExporter::createScopeArray()
+{
+    QJsonArray scopeArray;
+
+    for (qint32 idx = 0; idx < _pGraphDataModel->size(); idx++)
+    {
+        QJsonObject regObj;
+        regObj.insert(ProjectFileDefinitions::cActiveAttribute, _pGraphDataModel->isActive(GraphIdx(idx)));
+        regObj.insert(ProjectFileDefinitions::cTextTag, _pGraphDataModel->label(GraphIdx(idx)));
+        regObj.insert(ProjectFileDefinitions::cExpressionTag, _pGraphDataModel->expression(GraphIdx(idx)));
+        regObj.insert(ProjectFileDefinitions::cColorTag, _pGraphDataModel->color(GraphIdx(idx)).name());
+        regObj.insert(ProjectFileDefinitions::cValueAxisTag,
+                      static_cast<int>(_pGraphDataModel->valueAxis(GraphIdx(idx))));
+        scopeArray.append(regObj);
+    }
+
+    return scopeArray;
+}
+
+/*!
+ * \brief Build the "view" object containing scale settings.
+ */
+QJsonObject ProjectFileJsonExporter::createViewObject()
+{
+    QJsonObject xaxisObj;
+    if (_pGuiModel->xAxisScalingMode() == AxisMode::SCALE_SLIDING)
+    {
+        xaxisObj.insert(ProjectFileDefinitions::cModeAttribute, QString(ProjectFileDefinitions::cSlidingValue));
+        xaxisObj.insert(ProjectFileDefinitions::cSlidingintervalTag, static_cast<int>(_pGuiModel->xAxisSlidingSec()));
+    }
+    else
+    {
+        xaxisObj.insert(ProjectFileDefinitions::cModeAttribute, QString(ProjectFileDefinitions::cAutoValue));
+    }
+
+    auto buildYAxis = [](int axisId, AxisMode::AxisScaleOptions mode, double minVal, double maxVal) -> QJsonObject {
+        QJsonObject yaxisObj;
+        yaxisObj.insert(ProjectFileDefinitions::cAxisAttribute, axisId);
+
+        if (mode == AxisMode::SCALE_WINDOW_AUTO)
+        {
+            yaxisObj.insert(ProjectFileDefinitions::cModeAttribute, QString(ProjectFileDefinitions::cWindowAutoValue));
+        }
+        else if (mode == AxisMode::SCALE_MINMAX)
+        {
+            yaxisObj.insert(ProjectFileDefinitions::cModeAttribute, QString(ProjectFileDefinitions::cMinmaxValue));
+            yaxisObj.insert(ProjectFileDefinitions::cMinTag, minVal);
+            yaxisObj.insert(ProjectFileDefinitions::cMaxTag, maxVal);
+        }
+        else
+        {
+            yaxisObj.insert(ProjectFileDefinitions::cModeAttribute, QString(ProjectFileDefinitions::cAutoValue));
+        }
+
+        return yaxisObj;
+    };
+
+    QJsonArray yaxisArray;
+    yaxisArray.append(buildYAxis(0, _pGuiModel->yAxisScalingMode(), _pGuiModel->yAxisMin(), _pGuiModel->yAxisMax()));
+    yaxisArray.append(buildYAxis(1, _pGuiModel->y2AxisScalingMode(), _pGuiModel->y2AxisMin(), _pGuiModel->y2AxisMax()));
+
+    QJsonObject scaleObj;
+    scaleObj.insert(ProjectFileDefinitions::cXaxisTag, xaxisObj);
+    scaleObj.insert(ProjectFileDefinitions::cYaxisTag, yaxisArray);
+
+    QJsonObject viewObj;
+    viewObj.insert(ProjectFileDefinitions::cScaleTag, scaleObj);
+    return viewObj;
+}
+
+void ProjectFileJsonExporter::showExportError(const QString& projectFile)
+{
+    Util::showError(tr("Export settings to file (%1) failed").arg(projectFile));
+}

@@ -1,0 +1,919 @@
+
+#include "graphview.h"
+
+#include "graphview/graphindicators.h"
+#include "graphview/graphmarkers.h"
+#include "graphview/graphqualitymarkers.h"
+#include "graphview/graphscaling.h"
+#include "graphview/graphviewzoom.h"
+#include "graphview/notehandling.h"
+#include "graphview/scopeplot.h"
+#include "models/communicationstatsmodel.h"
+#include "models/graphdatamodel.h"
+#include "models/guimodel.h"
+#include "models/notemodel.h"
+#include "models/settingsmodel.h"
+#include "util/formatrelativetime.h"
+#include "util/result.h"
+#include "util/util.h"
+
+#include <QInputDialog>
+#include <QLocale>
+#include <QVector>
+#include <QtGlobal>
+
+/*
+ * The GraphDataSeries in the data model is the single source of truth for a signal's data.
+ * Each QCPGraph holds a private render copy of that data. Every function that mutates
+ * signal data must write the model series first and then update the render copy.
+ */
+
+GraphView::GraphView(GuiModel* pGuiModel,
+                     SettingsModel* pSettingsModel,
+                     GraphDataModel* pGraphDataModel,
+                     CommunicationStatsModel* pCommunicationStatsModel,
+                     NoteModel* pNoteModel,
+                     ScopePlot* pPlot,
+                     QObject* parent)
+    : QObject(parent)
+{
+    _pGuiModel = pGuiModel;
+    _pGraphDataModel = pGraphDataModel;
+    _pCommunicationStatsModel = pCommunicationStatsModel;
+    _pSettingsModel = pSettingsModel;
+
+    _pPlot = pPlot;
+
+    /*
+     * Greatly improves performance
+     *
+     * phFastPolylines	Graph/Curve lines are drawn with a faster method. This reduces the quality especially
+     *                   of the line segment joins. (Only relevant for solid line pens.)
+     * phCacheLabels		axis (tick) labels will be cached as pixmaps, increasing replot performance.
+     * */
+    _pPlot->setPlottingHints(QCP::phCacheLabels | QCP::phFastPolylines);
+
+    _pPlot->setInteraction(QCP::iSelectPlottables, true);
+
+    /*
+     * Use other modifier key than Ctrl for multi select.
+     * ModbusScope uses Ctrl for adding/moving marker.
+     * Note: Multi select is disabled, but modifier needs to be changed from default.
+     * */
+    _pPlot->setMultiSelectModifier(Qt::ShiftModifier);
+
+    _bCurrentHighlightState = false;
+
+    // Add layer to move graph in front
+    _pPlot->addLayer("topMain", _pPlot->layer("main"), QCustomPlot::limAbove);
+
+    // Add layer to move graph indicator in front (axes)
+    _pPlot->addLayer("topAxes", _pPlot->layer("axes"), QCustomPlot::limAbove);
+
+    // connect slots that takes care that when an axis is selected, only that direction can be dragged and zoomed:
+    connect(_pPlot, &ScopePlot::mousePress, this, &GraphView::mousePress);
+    connect(_pPlot, &ScopePlot::mouseRelease, this, &GraphView::mouseRelease);
+    connect(_pPlot, &ScopePlot::mouseWheel, this, &GraphView::mouseWheel);
+    connect(_pPlot, &ScopePlot::mouseMove, this, &GraphView::mouseMove);
+    connect(_pPlot->xAxis, QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged), this,
+            &GraphView::handleSamplePoints);
+
+    _pGraphScale = new GraphScale(_pGuiModel, _pPlot, this);
+    _pGraphViewZoom = new GraphViewZoom(_pGuiModel, _pPlot, this);
+    _pGraphMarkers = new GraphMarkers(pGraphDataModel, _pGuiModel, _pPlot, this);
+    _pGraphIndicators = new GraphIndicators(_pGraphDataModel, _pPlot, this);
+    _pGraphQualityMarkers = new GraphQualityMarkers(_pGraphDataModel, _pPlot, this);
+    _pNoteHandling = new NoteHandling(pNoteModel, _pPlot, this);
+
+    updateSecondaryAxisVisibility();
+
+    _pPlot->replot();
+}
+
+GraphView::~GraphView()
+{
+    delete _pGraphScale;
+    delete _pGraphViewZoom;
+    delete _pGraphMarkers;
+    delete _pGraphIndicators;
+    delete _pGraphQualityMarkers;
+    delete _pNoteHandling;
+}
+
+qint32 GraphView::graphDataSize()
+{
+    return _pPlot->graph(0)->data()->size();
+}
+
+bool GraphView::valuesUnderCursor(QList<double>& valueList)
+{
+    bool bRet = true;
+
+    const double xPos = _pPlot->xAxis->pixelToCoord(_pPlot->mapFromGlobal(QCursor::pos()).x());
+
+    if (_pPlot->graphCount() > 0)
+    {
+        double tooltipPos = getClosestPoint(xPos);
+
+        bool bValid;
+        const QCPRange keyRange = _pPlot->graph(0)->data()->keyRange(bValid);
+
+        // Check all graphs
+        for (qint32 activeGraphIndex = 0; activeGraphIndex < _pPlot->graphCount(); activeGraphIndex++)
+        {
+            if (_pPlot->underMouse() && bValid && keyRange.contains(xPos))
+            {
+                const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(activeGraphIndex));
+                GraphDataSeries::const_iterator graphDataIt =
+                  _pGraphDataModel->dataSeries(graphIdx).data()->findBegin(tooltipPos, false);
+                valueList.append(graphDataIt->value);
+            }
+            else
+            {
+                valueList.append(0);
+                bRet = false;
+            }
+        }
+    }
+    else
+    {
+        valueList.append(0);
+        bRet = false;
+    }
+
+    return bRet;
+}
+
+QPointF GraphView::pixelToPointF(const QPoint& pixel) const
+{
+    double xCoord = _pPlot->xAxis->pixelToCoord(pixel.x());
+    double yCoord = _pPlot->yAxis->pixelToCoord(pixel.y());
+
+    // Round xCoord in relation to x axis min and max
+    xCoord = roundToAxisRange(xCoord, _pPlot->xAxis);
+    yCoord = roundToAxisRange(yCoord, _pPlot->yAxis);
+
+    return QPointF(xCoord, yCoord);
+}
+
+/*!
+ * Round number with regards to axis range
+ */
+double GraphView::roundToAxisRange(double value, QCPAxis const* pAxis) const
+{
+    const double axisMin = pAxis->range().lower;
+    const double axisMax = pAxis->range().upper;
+
+    int decimals = Util::decimalsFromRange(axisMin, axisMax) + 2; // extra precision
+
+    return Util::roundToDecimals(value, decimals);
+}
+
+double GraphView::pixelToClosestKey(double pixel)
+{
+    return getClosestPoint(_pPlot->xAxis->pixelToCoord(pixel));
+}
+
+void GraphView::updateTooltip()
+{
+    paintTimeStampToolTip(_pPlot->mapFromGlobal(QCursor::pos()));
+}
+
+void GraphView::enableSamplePoints()
+{
+    handleSamplePoints();
+}
+
+/*!
+ * \brief Clears the data for the given graph, preserving time keys when other graphs are active.
+ * \param graphIdx Graph index in the full graph list.
+ */
+void GraphView::clearGraph(GraphIdx graphIdx)
+{
+    if (_pGraphDataModel->isActive(graphIdx))
+    {
+
+        QList<GraphIdx> activeGraphList;
+        _pGraphDataModel->activeGraphIndexList(activeGraphList);
+
+        if (activeGraphList.size() <= 0)
+        {
+            // No active graph: not possible
+        }
+        else if (activeGraphList.size() == 1)
+        {
+            /* Only one graph active: clear all data */
+            _pGraphDataModel->mutableDataSeries(graphIdx)->clear();
+
+            const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+            _pPlot->graph(activeIdx.v)->data()->clear();
+
+            _pGraphQualityMarkers->rebuild();
+
+            _pPlot->replot();
+        }
+        else
+        {
+            /* Several active graph, keep time data but clear data */
+            QSharedPointer<GraphDataSeries> pDataSeries = _pGraphDataModel->mutableDataSeries(graphIdx);
+            GraphDataSeries::iterator it = pDataSeries->begin();
+
+            /* Clear all values, keep timestamps. No measurement exists for these timestamps
+             * anymore, so quality is reset to NoValue, matching the padding samples
+             * updateGraphs() creates for the same situation. */
+            while (it != pDataSeries->end())
+            {
+                it->value = 0.0;
+                it->quality = DataQuality::Quality{ DataQuality::State::NoValue, DataQuality::Flag::NoFlags };
+                it++;
+            }
+
+            const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+            loadGraphDataFromModel(graphIdx, _pPlot->graph(activeIdx.v));
+
+            _pGraphQualityMarkers->rebuild();
+
+            _pPlot->replot();
+        }
+    }
+}
+
+/*!
+ * \brief Rebuilds all plotted graphs from the active-graph list in the data model.
+ */
+void GraphView::updateGraphs()
+{
+    _pGraphMarkers->clearTracers();
+    _pGraphIndicators->clear();
+
+    _pPlot->clearGraphs();
+
+    QList<GraphIdx> activeGraphList;
+    _pGraphDataModel->activeGraphIndexList(activeGraphList);
+
+    if (activeGraphList.size() > 0)
+    {
+        // All graphs should have the same amount of points.
+        // Loop over graphs and get maximum count of samples
+        qint32 maxSampleCount = 0;
+        GraphIdx maxSampleIdx;
+
+        foreach (GraphIdx graphIdx, activeGraphList)
+        {
+            const qint32 sampleCount = _pGraphDataModel->dataSeries(graphIdx)->size();
+            if (sampleCount > maxSampleCount)
+            {
+                maxSampleCount = sampleCount;
+                maxSampleIdx = graphIdx;
+            }
+        }
+
+        // Graph that have less points will be zeroed with that amount of points
+        foreach (GraphIdx graphIdx, activeGraphList)
+        {
+            QCPGraph* pGraph = _pPlot->addGraph();
+            setGraphAxis(pGraph, _pGraphDataModel->valueAxis(graphIdx));
+            setGraphColor(pGraph, _pGraphDataModel->color(graphIdx));
+            pGraph->setSelectable(QCP::stWhole);
+            pGraph->setVisible(_pGraphDataModel->isVisible(graphIdx));
+
+            connect(pGraph, QOverload<bool>::of(&QCPGraph::selectionChanged), this, &GraphView::handleSelectionChanged);
+
+            QSharedPointer<GraphDataSeries> pDataSeries = _pGraphDataModel->mutableDataSeries(graphIdx);
+
+            // Set data to zero when needed
+            if (pDataSeries->size() != maxSampleCount)
+            {
+                const QSharedPointer<const GraphDataSeries> pReferenceSeries =
+                  _pGraphDataModel->dataSeries(maxSampleIdx);
+                pDataSeries->clear();
+
+                // Add zero value for every timestamp (x-coordinate); nothing was measured for it
+                const DataQuality::Quality noValue{ DataQuality::State::NoValue, DataQuality::Flag::NoFlags };
+                GraphDataSeries::const_iterator refIt = pReferenceSeries->constBegin();
+                while (refIt != pReferenceSeries->constEnd())
+                {
+                    pDataSeries->add(refIt->timestamp, 0, noValue);
+                    refIt++;
+                }
+            }
+
+            loadGraphDataFromModel(graphIdx, pGraph);
+
+            _pGraphMarkers->addTracer(pGraph);
+            _pGraphIndicators->add(graphIdx, pGraph);
+        }
+    }
+
+    _pGraphQualityMarkers->rebuild();
+
+    updateSecondaryAxisVisibility();
+
+    _pPlot->replot();
+
+    emit afterGraphUpdate();
+}
+
+/*!
+ * \brief Replaces the signal's render data with a copy of the model's data series.
+ * \param graphIdx Graph index in the full graph list.
+ * \param pGraph Plotted graph to update.
+ */
+void GraphView::loadGraphDataFromModel(GraphIdx graphIdx, QCPGraph* pGraph)
+{
+    const QSharedPointer<const GraphDataSeries> pDataSeries = _pGraphDataModel->dataSeries(graphIdx);
+
+    QVector<double> timestamps;
+    QVector<double> values;
+    timestamps.reserve(pDataSeries->size());
+    values.reserve(pDataSeries->size());
+
+    GraphDataSeries::const_iterator it = pDataSeries->constBegin();
+    while (it != pDataSeries->constEnd())
+    {
+        timestamps.append(it->timestamp);
+        values.append(it->value);
+        it++;
+    }
+
+    pGraph->setData(timestamps, values, true);
+}
+
+/*!
+ * \brief Updates the pen color of the plotted graph to match the model color.
+ * \param graphIdx Graph index in the full graph list.
+ */
+void GraphView::changeGraphColor(GraphIdx graphIdx)
+{
+    if (_pGraphDataModel->isActive(graphIdx))
+    {
+        const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+        setGraphColor(_pPlot->graph(activeIdx.v), _pGraphDataModel->color(graphIdx));
+
+        _pPlot->replot();
+    }
+}
+
+/*!
+ * \brief Moves the plotted graph to the primary or secondary value axis.
+ * \param graphIdx Graph index in the full graph list.
+ */
+void GraphView::changeGraphAxis(GraphIdx graphIdx)
+{
+    if (_pGraphDataModel->isActive(graphIdx))
+    {
+        const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+        setGraphAxis(_pPlot->graph(activeIdx.v), _pGraphDataModel->valueAxis(graphIdx));
+        _pGraphQualityMarkers->setAxis(graphIdx, _pGraphDataModel->valueAxis(graphIdx));
+
+        updateSecondaryAxisVisibility();
+
+        _pPlot->replot();
+    }
+}
+
+/*!
+ * \brief Selects or deselects the given graph in the plot, clearing any previous selection.
+ * \param graphIdx Graph index to select, or an invalid GraphIdx to clear the selection.
+ */
+void GraphView::changeSelectedGraph(GraphIdx graphIdx)
+{
+    QList<QCPGraph*> selectedGraphs = _pPlot->selectedGraphs();
+
+    if (!graphIdx.isValid())
+    {
+        for (QCPGraph* selectedGraph : std::as_const(selectedGraphs))
+        {
+            selectedGraph->setSelection(QCPDataSelection());
+        }
+    }
+    else
+    {
+        const ActiveIdx activeGraphIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+        if (!activeGraphIdx.isValid())
+        {
+            return;
+        }
+
+        auto graph = _pPlot->graph(activeGraphIdx.v);
+        const bool bAlreadySelected = selectedGraphs.contains(graph);
+
+        if (!bAlreadySelected)
+        {
+            for (QCPGraph* selectedGraph : std::as_const(selectedGraphs))
+            {
+                selectedGraph->setSelection(QCPDataSelection());
+            }
+
+            graph->setSelection(QCPDataSelection(QCPDataRange(0, 1)));
+        }
+
+        bringToFront(activeGraphIdx);
+    }
+
+    _pPlot->replot();
+}
+
+/*!
+ * \brief Moves the specified graph to the top drawing layer so it renders above others.
+ * \param activeGraphIdx Sequential slot index of the active graph.
+ */
+void GraphView::bringToFront(ActiveIdx activeGraphIdx)
+{
+    if (!activeGraphIdx.isValid() || activeGraphIdx.v >= _pPlot->graphCount())
+    {
+        return;
+    }
+
+    const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(activeGraphIdx);
+    if (!graphIdx.isValid())
+    {
+        return;
+    }
+
+    _pPlot->graph(activeGraphIdx.v)->setLayer("topMain");
+    _pGraphIndicators->setFrontGraph(graphIdx);
+    _pPlot->replot();
+}
+
+/*!
+ * \brief Appends time-series data to all active signals and rescales the axes.
+ * \param timeData Shared time keys for all signals.
+ * \param data Per-signal value lists, aligned with \a timeData.
+ * \param qualities Per-signal data quality, aligned with \a data; empty when all samples are Good.
+ */
+void GraphView::addData(QList<double> timeData,
+                        QList<QList<double> > data,
+                        QList<QList<DataQuality::Quality> > qualities)
+{
+    quint64 totalPoints = 0;
+    const QVector<double> timeDataVector = timeData.toVector();
+
+    for (qint32 i = 0; i < data.size(); i++)
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(i));
+        if (i < qualities.size())
+        {
+            _pGraphDataModel->mutableDataSeries(graphIdx)->setSamples(timeData, data.at(i), qualities.at(i));
+        }
+        else
+        {
+            _pGraphDataModel->mutableDataSeries(graphIdx)->setSamples(timeData, data.at(i));
+        }
+
+        QVector<double> graphData = data.at(i).toVector();
+        _pPlot->graph(i)->setData(timeDataVector, graphData, true);
+
+        totalPoints += graphData.size();
+    }
+
+    // Check if optimizations are needed
+    if (totalPoints > _cOptimizeThreshold)
+    {
+        _pGuiModel->setHighlightSamples(false);
+
+        for (qint32 i = 0; i < _pPlot->graphCount(); i++)
+        {
+            QPen pen = _pPlot->graph(i)->pen();
+            pen.setWidth(1);
+            _pPlot->graph(i)->setPen(pen);
+        }
+
+        _pPlot->setNotAntialiasedElements(QCP::aeAll);
+    }
+
+    _pGraphQualityMarkers->rebuild();
+
+    _pPlot->rescaleAxes(true);
+    _pPlot->replot();
+}
+
+/*!
+ * \brief Shows or hides the plotted graph and refreshes markers and indicators.
+ * \param graphIdx Graph index in the full graph list.
+ */
+void GraphView::handleGraphVisibilityChange(GraphIdx graphIdx)
+{
+    if (_pGraphDataModel->isActive(graphIdx))
+    {
+        const bool bShow = _pGraphDataModel->isVisible(graphIdx);
+
+        const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+
+        _pPlot->graph(activeIdx.v)->setVisible(bShow);
+        _pGraphQualityMarkers->setVisible(graphIdx, bShow);
+        _pGraphMarkers->updateTracersVisibility();
+        _pGraphIndicators->updateIndicatorVisibility();
+        rescalePlot();
+    }
+}
+
+void GraphView::rescalePlot()
+{
+    _pGraphScale->rescale();
+
+    _pPlot->replot();
+}
+
+/*!
+ * \brief Appends one poll's results as a new sample to every active signal.
+ *
+ * A result that is not usable keeps the signal's previous value (0 when there is none); its data quality is
+ * stored with the sample.
+ *
+ * \param resultList One result per active signal, in active-graph order.
+ */
+void GraphView::plotResults(ResultDoubleList resultList)
+{
+    /* QList correspond with activeGraphList */
+
+    quint64 timeData;
+    if (_pSettingsModel->absoluteTimes())
+    {
+        // Epoch is in UTC time
+        timeData = QDateTime::currentMSecsSinceEpoch();
+    }
+    else
+    {
+        timeData = QDateTime::currentMSecsSinceEpoch() - _pCommunicationStatsModel->startTime();
+    }
+
+    QList<double> dataList;
+    QList<DataQuality::Quality> qualityList;
+
+    qint32 i = 0;
+    for (const auto& result : resultList)
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(i));
+        const QSharedPointer<GraphDataSeries> pDataSeries = _pGraphDataModel->mutableDataSeries(graphIdx);
+
+        const double value = result.isUsable() ? result.value() : pDataSeries->lastValue(0.0);
+
+        pDataSeries->add(timeData, value, result.quality());
+
+        _pPlot->graph(i)->addData(timeData, value);
+        _pGraphQualityMarkers->appendSample(graphIdx, timeData, value, result.quality());
+        dataList.append(value);
+        qualityList.append(result.quality());
+
+        i++;
+    }
+
+    emit dataAddedToPlot(timeData, dataList, qualityList);
+
+    rescalePlot();
+}
+
+void GraphView::clearResults()
+{
+    for (qint32 i = 0; i < _pPlot->graphCount(); i++)
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(i));
+        _pGraphDataModel->mutableDataSeries(graphIdx)->clear();
+
+        _pPlot->graph(i)->data()->clear();
+    }
+
+    _pGraphQualityMarkers->rebuild();
+
+    rescalePlot();
+}
+
+void GraphView::showMarkers()
+{
+    double startPos = (_pPlot->xAxis->range().size() * 1 / 3) + _pPlot->xAxis->range().lower;
+    double endPos = (_pPlot->xAxis->range().size() * 2 / 3) + _pPlot->xAxis->range().lower;
+
+    _pGuiModel->setStartMarkerPos(getClosestPoint(startPos));
+    _pGuiModel->setEndMarkerPos(getClosestPoint(endPos));
+}
+
+void GraphView::mousePress(QMouseEvent* event)
+{
+    if (_pGraphViewZoom->handleMousePress(event))
+    {
+        /* Already handled by zoom */
+
+        /* Disable range drag when zooming is active */
+        _pGraphScale->disableRangeZoom();
+    }
+    else if (event->modifiers() & Qt::ControlModifier)
+    {
+        /* Disable range drag when control key is pressed */
+        _pGraphScale->disableRangeZoom();
+
+        if (_pPlot->graphCount() > 0)
+        {
+            const double xPos = _pPlot->xAxis->pixelToCoord(event->pos().x());
+            double markerPos = getClosestPoint(xPos);
+
+            if (event->button() & Qt::LeftButton)
+            {
+                _pGuiModel->setStartMarkerPos(markerPos);
+            }
+            else if (event->button() & Qt::RightButton)
+            {
+                _pGuiModel->setEndMarkerPos(markerPos);
+            }
+            else
+            {
+                // No function
+            }
+        }
+    }
+    else
+    {
+
+        if (_pNoteHandling->handleMousePress(event))
+        {
+            /* Ignore global drag */
+            /* Disable range drag when note item is selected */
+            _pGraphScale->disableRangeZoom();
+        }
+        else
+        {
+            _pGraphScale->configureDragDirection();
+        }
+    }
+}
+
+void GraphView::mouseRelease(QMouseEvent* event)
+{
+    Q_UNUSED(event);
+
+    (void) _pGraphViewZoom->handleMouseRelease();
+    (void) _pNoteHandling->handleMouseRelease();
+
+    /* Always re-enable range drag */
+    _pGraphScale->enableRangeZoom();
+}
+
+void GraphView::mouseWheel()
+{
+    if (_pGraphViewZoom->handleMouseWheel())
+    {
+        /* Already handled by zoom */
+    }
+    else
+    {
+        _pGraphScale->zoomGraph();
+    }
+}
+
+void GraphView::mouseMove(QMouseEvent* event)
+{
+    // Check for graph drag
+    if (event->buttons() & Qt::LeftButton)
+    {
+        if (!(event->modifiers() & Qt::ControlModifier))
+        {
+            if (!_pGraphViewZoom->handleMouseMove(event) && !_pNoteHandling->handleMouseMove(event))
+            {
+                _pGraphScale->handleDrag();
+            }
+        }
+    }
+    else
+    {
+        paintTimeStampToolTip(event->pos());
+
+        if (_pGuiModel->cursorValues())
+        {
+            emit cursorValueUpdate();
+        }
+    }
+}
+
+void GraphView::handleSelectionChanged(bool selected)
+{
+    if (selected)
+    {
+        QCPGraph* pGraph = qobject_cast<QCPGraph*>(QObject::sender());
+        const ActiveIdx activeIdx = getActiveGraphIndex(pGraph);
+        if (!activeIdx.isValid())
+        {
+            _pGraphDataModel->setSelectedGraph(GraphIdx());
+        }
+        else
+        {
+            const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(activeIdx);
+            _pGraphDataModel->setSelectedGraph(graphIdx);
+        }
+    }
+    else
+    {
+        _pGraphDataModel->setSelectedGraph(GraphIdx());
+    }
+
+    const GraphIdx selectedGraph = _pGraphDataModel->selectedGraph();
+    const ActiveIdx selectedActiveIdx =
+      selectedGraph.isValid() ? _pGraphDataModel->convertToActiveGraphIndex(selectedGraph) : ActiveIdx();
+
+    for (qint32 idx = 0; idx < _pPlot->graphCount(); idx++)
+    {
+        QPen graphPen = _pPlot->graph(idx)->pen();
+        QColor baseColor = graphPen.color();
+        QColor normalPen = QColor(baseColor.red(), baseColor.green(), baseColor.blue(), 255);
+        QColor transparentPen = QColor(baseColor.red(), baseColor.green(), baseColor.blue(), 16);
+
+        if (!selectedActiveIdx.isValid() || (idx == selectedActiveIdx.v))
+        {
+            graphPen.setColor(normalPen);
+        }
+        else
+        {
+            graphPen.setColor(transparentPen);
+        }
+
+        _pPlot->graph(idx)->setPen(graphPen);
+    }
+}
+
+void GraphView::paintTimeStampToolTip(QPoint pos)
+{
+    if (_pGuiModel->cursorValues() && (_pPlot->graphCount() > 0))
+    {
+        const double xPos = _pPlot->xAxis->pixelToCoord(pos.x());
+        double tooltipPos = getClosestPoint(xPos);
+
+        bool bValid;
+        const QCPRange keyRange = _pPlot->graph(0)->data()->keyRange(bValid);
+
+        if (bValid && keyRange.contains(xPos))
+        {
+            QString toolText = FormatRelativeTime::formatTime(tooltipPos);
+            QPoint location = _pPlot->mapToGlobal(pos);
+
+            if (location != _tooltipLocation)
+            {
+                QToolTip::showText(location, toolText, _pPlot);
+
+                _tooltipLocation = location;
+            }
+        }
+        else
+        {
+            QToolTip::hideText();
+            _tooltipLocation = QPoint(-1, -1);
+        }
+    }
+    else
+    {
+        if (QToolTip::isVisible())
+        {
+            QToolTip::hideText();
+            _tooltipLocation = QPoint(-1, -1);
+        }
+    }
+}
+
+void GraphView::handleSamplePoints()
+{
+    bool bHighlight = false;
+
+    if (_pGuiModel->highlightSamples() && _pPlot->graphCount() > 0 && graphDataSize() > 0)
+    {
+        QCPRange axisRange = _pPlot->xAxis->range();
+
+        auto lowerBoundIt = _pPlot->graph(0)->data()->findBegin(axisRange.lower, false);
+        auto upperBoundIt = _pPlot->graph(0)->data()->findBegin(axisRange.upper);
+        const auto endIt = _pPlot->graph(0)->data()->constEnd();
+
+        if (lowerBoundIt != endIt)
+        {
+            const int pointCount = upperBoundIt - lowerBoundIt;
+
+            /* Get size in pixels */
+            const double sizePx =
+              _pPlot->xAxis->coordToPixel(upperBoundIt->key) - _pPlot->xAxis->coordToPixel(lowerBoundIt->key);
+
+            /* Calculate number of pixels per point */
+            double nrOfPixelsPerPoint;
+
+            if (lowerBoundIt != upperBoundIt)
+            {
+                nrOfPixelsPerPoint = sizePx / qAbs(pointCount);
+            }
+            else
+            {
+                nrOfPixelsPerPoint = sizePx;
+            }
+
+            if (nrOfPixelsPerPoint > _cPixelPerPointThreshold)
+            {
+                bHighlight = true;
+            }
+        }
+    }
+
+    if (bHighlight != _bCurrentHighlightState)
+    {
+        _bCurrentHighlightState = bHighlight;
+        highlightSamples(bHighlight);
+        _pPlot->replot();
+    }
+}
+
+void GraphView::highlightSamples(bool bState)
+{
+    for (qint32 graphIndex = 0; graphIndex < _pPlot->graphCount(); graphIndex++)
+    {
+        if (bState)
+        {
+            _pPlot->graph(graphIndex)->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, 3));
+        }
+        else
+        {
+            _pPlot->graph(graphIndex)->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
+        }
+    }
+}
+
+void GraphView::setGraphColor(QCPGraph* _pGraph, const QColor& color)
+{
+    QPen pen;
+    pen.setColor(color);
+    pen.setWidth(2);
+    pen.setCosmetic(true);
+    _pGraph->setPen(pen);
+    _pGraph->selectionDecorator()->setPen(pen);
+}
+
+void GraphView::setGraphAxis(QCPGraph* _pGraph, const GraphData::valueAxis_t& axis)
+{
+    if (axis == GraphData::VALUE_AXIS_SECONDARY)
+    {
+        _pGraph->setValueAxis(_pPlot->yAxis2);
+    }
+    else
+    {
+        _pGraph->setValueAxis(_pPlot->yAxis);
+    }
+}
+
+double GraphView::getClosestPoint(double coordinate)
+{
+    if ((_pPlot->graphCount() > 0) && (graphDataSize() != 0))
+    {
+        QCPGraphDataContainer::const_iterator closestIt;
+        QCPGraphDataContainer::const_iterator leftIt = _pPlot->graph(0)->data()->findBegin(coordinate);
+
+        auto rightIt = leftIt + 1;
+        if (rightIt != _pPlot->graph(0)->data()->constEnd())
+        {
+
+            const double diffReference = rightIt->key - leftIt->key;
+            const double diffPos = coordinate - leftIt->key;
+
+            if (diffPos > (diffReference / 2))
+            {
+                closestIt = rightIt;
+            }
+            else
+            {
+                closestIt = leftIt;
+            }
+        }
+        else
+        {
+            closestIt = leftIt;
+        }
+
+        return closestIt->key;
+    }
+    else
+    {
+        return coordinate;
+    }
+}
+
+void GraphView::updateSecondaryAxisVisibility()
+{
+    bool bSecondaryVisibility = false;
+    for (qint32 activeGraphIndex = 0; activeGraphIndex < _pPlot->graphCount(); activeGraphIndex++)
+    {
+        const GraphIdx graphIdx = _pGraphDataModel->convertToGraphIndex(ActiveIdx(activeGraphIndex));
+        if (_pGraphDataModel->valueAxis(graphIdx) == GraphData::VALUE_AXIS_SECONDARY)
+        {
+            bSecondaryVisibility = true;
+            break;
+        }
+    }
+
+    _pPlot->yAxis2->setVisible(bSecondaryVisibility);
+
+    rescalePlot();
+}
+
+ActiveIdx GraphView::getActiveGraphIndex(QCPGraph const* const pGraph)
+{
+    for (int i = 0; i < _pPlot->graphCount(); ++i)
+    {
+        if (_pPlot->graph(i) == pGraph)
+        {
+            return ActiveIdx(i);
+        }
+    }
+    return ActiveIdx();
+}

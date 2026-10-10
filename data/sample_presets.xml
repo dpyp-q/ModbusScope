@@ -1,0 +1,37 @@
+<modbusscope>
+	<parsepreset>
+		<name>Default (be)</name>
+		<keyword>-be</keyword>
+		<fieldseparator><![CDATA[;]]></fieldseparator>
+		<decimalseparator><![CDATA[,]]></decimalseparator>
+		<thousandseparator><![CDATA[ ]]></thousandseparator>
+		<commentSequence><![CDATA[//]]></commentSequence>
+		<column>1</column>
+		<labelrow>1</labelrow>
+		<datarow>2</datarow>
+	</parsepreset>
+	
+	<parsepreset>
+		<name>Default (us)</name>
+		<keyword>-us</keyword>
+		<fieldseparator><![CDATA[,]]></fieldseparator>
+		<decimalseparator><![CDATA[.]]></decimalseparator>
+		<thousandseparator><![CDATA[ ]]></thousandseparator>
+		<column>1</column>
+		<labelrow>1</labelrow>
+		<datarow>2</datarow>
+	</parsepreset>
+	
+	<parsepreset>
+		<name>be-seconds</name>
+		<fieldseparator><![CDATA[;]]></fieldseparator>
+		<decimalseparator><![CDATA[,]]></decimalseparator>
+		<thousandseparator><![CDATA[ ]]></thousandseparator>
+		<commentSequence><![CDATA[//]]></commentSequence>
+		<column>1</column>
+		<labelrow>1</labelrow>
+		<datarow>2</datarow>
+		<timeinmilliseconds>false</timeinmilliseconds>
+	</parsepreset>
+
+</modbusscope>

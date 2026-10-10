@@ -1,0 +1,374 @@
+#include "tst_adapterpoll.h"
+
+#include "ProtocolAdapter/adapterhub.h"
+#include "communication/adapterpoll.h"
+#include "communication/datapoint.h"
+#include "models/settingsmodel.h"
+
+#include <QSignalSpy>
+#include <QStringList>
+#include <QTest>
+
+/* ---- Mock AdapterHub ---- */
+
+class MockAdapterHub : public AdapterHub
+{
+    Q_OBJECT
+public:
+    explicit MockAdapterHub(QObject* parent = nullptr) : AdapterHub(parent)
+    {
+    }
+
+    bool isAdapterReady() const override
+    {
+        return _mockReady;
+    }
+    void startSession(const QString& adapterId, const QStringList& expressions) override
+    {
+        _startCalls.append({ adapterId, expressions });
+    }
+    void initAdapter() override
+    {
+        _initCount++;
+    }
+    void stopSession() override
+    {
+        _stopCount++;
+    }
+    void requestReadData() override
+    {
+    }
+
+    void triggerAdapterReady()
+    {
+        emit adapterReady();
+    }
+    void triggerSessionStarted()
+    {
+        emit sessionStarted();
+    }
+    void triggerSessionError(const QString& message)
+    {
+        emit sessionError(message);
+    }
+    void triggerReadDataResult(const QString& adapterId, ResultDoubleList results)
+    {
+        emit readDataResult(adapterId, results);
+    }
+
+    bool _mockReady{ false };
+    QList<QPair<QString, QStringList>> _startCalls;
+    int _initCount{ 0 };
+    int _stopCount{ 0 };
+};
+
+/* ---- Fixture ---- */
+
+static SettingsModel* s_pSettingsModel = nullptr;
+static MockAdapterHub* s_pMockHub = nullptr;
+static AdapterPoll* s_pPoll = nullptr;
+static QStringList s_commWarningLogs;
+static QtMessageHandler s_previousHandler = nullptr;
+
+//! Captures scope.comm data point quality warnings so tests can check exactly which lines were logged.
+static void captureCommWarningLogs(QtMsgType type, const QMessageLogContext& context, const QString& msg)
+{
+    const bool isCommWarning =
+      (type == QtWarningMsg && context.category != nullptr && QByteArray(context.category) == "scope.comm");
+    if (isCommWarning && msg.startsWith(QStringLiteral("Data point ")))
+    {
+        s_commWarningLogs.append(msg);
+        return;
+    }
+
+    if (s_previousHandler != nullptr)
+    {
+        s_previousHandler(type, context, msg);
+    }
+}
+
+//! Starts communication for a single data point and runs one poll that returns \a result.
+static void startAndPoll(const Result<double>& result)
+{
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+    s_pMockHub->triggerSessionStarted();
+    s_pMockHub->triggerReadDataResult(QStringLiteral("modbus"), ResultDoubleList{ result });
+}
+
+//! Runs one more poll that returns \a result.
+static void poll(const Result<double>& result)
+{
+    s_pMockHub->triggerReadDataResult(QStringLiteral("modbus"), ResultDoubleList{ result });
+}
+
+void TestAdapterPoll::init()
+{
+    s_pSettingsModel = new SettingsModel;
+    s_pMockHub = new MockAdapterHub;
+    s_pPoll = new AdapterPoll(s_pSettingsModel, s_pMockHub);
+
+    s_commWarningLogs.clear();
+    s_previousHandler = qInstallMessageHandler(captureCommWarningLogs);
+}
+
+void TestAdapterPoll::cleanup()
+{
+    qInstallMessageHandler(s_previousHandler);
+
+    delete s_pPoll;
+    delete s_pMockHub;
+    delete s_pSettingsModel;
+}
+
+/* ---- Tests ---- */
+
+void TestAdapterPoll::startCommunicationWhenAdapterReady()
+{
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+
+    QCOMPARE(s_pMockHub->_startCalls.size(), 1);
+    QCOMPARE(s_pMockHub->_initCount, 0);
+    QVERIFY(s_pPoll->isActive());
+}
+
+void TestAdapterPoll::startCommunicationWhenAdapterNotReady()
+{
+    /* AdapterPoll no longer distinguishes "idle" from "mid-init" — it unconditionally asks the
+       hub to get ready and lets AdapterHub decide, per-manager, what actually needs restarting
+       (see F13 in the multi-device coherence audit). */
+    s_pMockHub->_mockReady = false;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+
+    /* startSession not called yet — waiting for adapterReady */
+    QCOMPARE(s_pMockHub->_startCalls.size(), 0);
+    /* initAdapter called unconditionally to ask the hub to get ready */
+    QCOMPARE(s_pMockHub->_initCount, 1);
+
+    s_pMockHub->triggerAdapterReady();
+
+    QCOMPARE(s_pMockHub->_startCalls.size(), 1);
+    QCOMPARE(s_pMockHub->_startCalls[0].first, QStringLiteral("modbus"));
+    QCOMPARE(s_pMockHub->_startCalls[0].second, QStringList{ QStringLiteral("${h0}") });
+}
+
+void TestAdapterPoll::doubleStartCommunicationWhileInitializing()
+{
+    s_pMockHub->_mockReady = false;
+
+    QList<DataPoint> registers1{ DataPoint(QStringLiteral("${h0}"), 1) };
+    QList<DataPoint> registers2{ DataPoint(QStringLiteral("${h1}"), 1) };
+
+    s_pPoll->startCommunication(registers1);
+    /* Second call before adapterReady fires — must not register a second connection */
+    s_pPoll->startCommunication(registers2);
+
+    s_pMockHub->triggerAdapterReady();
+
+    /* startSession called exactly once with the latest expressions */
+    QCOMPARE(s_pMockHub->_startCalls.size(), 1);
+    QCOMPARE(s_pMockHub->_startCalls[0].second, QStringList{ QStringLiteral("${h1}") });
+}
+
+void TestAdapterPoll::stopCommunicationClearsPendingState()
+{
+    s_pMockHub->_mockReady = false;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+    QVERIFY(s_pPoll->isActive());
+
+    s_pPoll->stopCommunication();
+    QVERIFY(!s_pPoll->isActive());
+    QCOMPARE(s_pMockHub->_stopCount, 1);
+
+    /* adapterReady fires after stop — must not trigger startSession */
+    s_pMockHub->triggerAdapterReady();
+    QCOMPARE(s_pMockHub->_startCalls.size(), 0);
+}
+
+void TestAdapterPoll::stopCommunicationAllowsNewWaitAfterRestart()
+{
+    s_pMockHub->_mockReady = false;
+
+    QList<DataPoint> registers1{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers1);
+
+    /* Stop before adapterReady fires */
+    s_pPoll->stopCommunication();
+
+    /* After stop, a new startCommunication should work — one-shot slot must be re-registerable */
+    QList<DataPoint> registers2{ DataPoint(QStringLiteral("${h2}"), 1) };
+    s_pPoll->startCommunication(registers2);
+
+    s_pMockHub->triggerAdapterReady();
+
+    QCOMPARE(s_pMockHub->_startCalls.size(), 1);
+    QCOMPARE(s_pMockHub->_startCalls[0].second, QStringList{ QStringLiteral("${h2}") });
+}
+
+void TestAdapterPoll::phantomAdapterDoesNotHangPoll()
+{
+    /* MockAdapterHub::adapterManager() returns nullptr for all IDs (base-class behaviour),
+     * so every adapter group created by buildAdapterGroups() is "phantom".
+     * triggerRegisterRead() must not insert phantom IDs into _pendingResultAdapters,
+     * otherwise readDataResult would never drain it and registerDataReady would never fire. */
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+    QVERIFY(s_pPoll->isActive());
+
+    QSignalSpy spy(s_pPoll, &AdapterPoll::registerDataReady);
+
+    /* sessionStarted fires triggerRegisterRead(); with the fix, _pendingResultAdapters
+     * remains empty because adapterManager("modbus") == nullptr */
+    s_pMockHub->triggerSessionStarted();
+
+    /* A result arrives — since _pendingResultAdapters is empty the merge runs immediately */
+    ResultDoubleList results;
+    results.append(Result<double>(1.0, DataQuality::State::Good));
+    s_pMockHub->triggerReadDataResult(QStringLiteral("modbus"), results);
+
+    QCOMPARE(spy.count(), 1);
+}
+
+/*!
+ * \brief An adapter that returns a different number of results than data points requested is a
+ * fault: its data points must come out Invalid, never NoValue ("not started yet").
+ */
+void TestAdapterPoll::mismatchedGroupResultsAreInvalidNotNoValue()
+{
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+
+    QSignalSpy spy(s_pPoll, &AdapterPoll::registerDataReady);
+    s_pMockHub->triggerSessionStarted();
+    s_pMockHub->triggerReadDataResult(QStringLiteral("modbus"), ResultDoubleList());
+
+    QCOMPARE(spy.count(), 1);
+    const auto merged = spy.at(0).at(0).value<ResultDoubleList>();
+    QCOMPARE(merged.size(), 1);
+    QCOMPARE(merged[0].state(), DataQuality::State::Invalid);
+}
+
+void TestAdapterPoll::sessionErrorClearsForRestart()
+{
+    /* After a session error, _pendingResults and _pendingResultAdapters must be cleared
+     * so that a subsequent startCommunication() cycle starts with a clean slate. */
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+    QVERIFY(s_pPoll->isActive());
+
+    /* Simulate error mid-session */
+    s_pMockHub->triggerSessionError(QStringLiteral("test error"));
+    QVERIFY(!s_pPoll->isActive());
+
+    /* Restart without an explicit stopCommunication() */
+    s_pPoll->startCommunication(registers);
+    QVERIFY(s_pPoll->isActive());
+
+    QSignalSpy spy(s_pPoll, &AdapterPoll::registerDataReady);
+
+    /* New read cycle — must complete cleanly without stale data interference */
+    s_pMockHub->triggerSessionStarted();
+
+    ResultDoubleList results;
+    results.append(Result<double>(2.0, DataQuality::State::Good));
+    s_pMockHub->triggerReadDataResult(QStringLiteral("modbus"), results);
+
+    QCOMPARE(spy.count(), 1);
+}
+
+void TestAdapterPoll::sessionErrorEmitsCommunicationError()
+{
+    s_pMockHub->_mockReady = true;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+
+    QSignalSpy spy(s_pPoll, &AdapterPoll::communicationError);
+    s_pMockHub->triggerSessionError(QStringLiteral("test error"));
+
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("test error"));
+}
+
+void TestAdapterPoll::sessionErrorWhileInactiveDoesNotEmitCommunicationError()
+{
+    /* AdapterHub::sessionError can fire outside any startCommunication() cycle (e.g. a failed
+       adapter discovery at application startup); AdapterPoll must not surface that as a
+       communicationError since no communication session was ever running or requested. */
+    QSignalSpy spy(s_pPoll, &AdapterPoll::communicationError);
+    s_pMockHub->triggerSessionError(QStringLiteral("startup error"));
+
+    QCOMPARE(spy.count(), 0);
+}
+
+void TestAdapterPoll::sessionErrorWhileWaitingForAdapterEmitsCommunicationError()
+{
+    /* A session error while still waiting for the adapter to become ready (e.g. it failed to
+       initialize) must be surfaced exactly like an error during an active session. */
+    s_pMockHub->_mockReady = false;
+
+    QList<DataPoint> registers{ DataPoint(QStringLiteral("${h0}"), 1) };
+    s_pPoll->startCommunication(registers);
+    QVERIFY(s_pPoll->isActive());
+    QCOMPARE(s_pMockHub->_startCalls.size(), 0);
+
+    QSignalSpy spy(s_pPoll, &AdapterPoll::communicationError);
+    s_pMockHub->triggerSessionError(QStringLiteral("adapter init failed"));
+
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("adapter init failed"));
+}
+
+/*!
+ * \brief A data point going bad is logged once with its expression, not again on every poll.
+ */
+void TestAdapterPoll::qualityChangeIsLoggedOnce()
+{
+    startAndPoll(Result<double>(1.0, DataQuality::State::Good));
+    QVERIFY(s_commWarningLogs.isEmpty());
+
+    poll(Result<double>(0.0, DataQuality::State::Invalid));
+    poll(Result<double>(0.0, DataQuality::State::Invalid));
+
+    QCOMPARE(s_commWarningLogs, QStringList{ QStringLiteral("Data point ${h0}, device id 1: invalid") });
+}
+
+void TestAdapterPoll::qualityRecoveryIsLogged()
+{
+    startAndPoll(Result<double>(0.0, DataQuality::State::Invalid));
+    poll(Result<double>(2.0, DataQuality::State::Good));
+
+    const QStringList expected{ QStringLiteral("Data point ${h0}, device id 1: invalid"),
+                                QStringLiteral("Data point ${h0}, device id 1: good") };
+    QCOMPARE(s_commWarningLogs, expected);
+}
+
+void TestAdapterPoll::qualityFlagsAreLogged()
+{
+    Result<double> degraded(3.0, DataQuality::State::Good);
+    degraded.addFlags(DataQuality::Flag::Blocked | DataQuality::Flag::Overflow);
+
+    startAndPoll(degraded);
+
+    QCOMPARE(s_commWarningLogs,
+             QStringList{ QStringLiteral("Data point ${h0}, device id 1: degraded (blocked|overflow)") });
+}
+
+QTEST_GUILESS_MAIN(TestAdapterPoll)
+
+#include "tst_adapterpoll.moc"

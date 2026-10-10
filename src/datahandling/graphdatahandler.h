@@ -1,0 +1,32 @@
+#ifndef GRAPHDATAHANDLER_H
+#define GRAPHDATAHANDLER_H
+
+#include "communication/datapoint.h"
+#include "datahandling/qmuparser.h"
+#include "util/graphindex.h"
+#include "util/result.h"
+
+// Forward declaration
+class GraphDataModel;
+
+class GraphDataHandler
+{
+public:
+    GraphDataHandler() = default;
+
+    void setupExpressions(GraphDataModel* pGraphDataModel, QList<DataPoint>& registerList);
+
+    QString expressionParseMsg(qint32 exprIdx) const;
+    qint32 expressionErrorPos(qint32 exprIdx) const;
+    QMuParser::ErrorType expressionErrorType(qint32 exprIdx) const;
+
+    ResultDoubleList handleRegisterData(const ResultDoubleList& results);
+
+private:
+    QList<GraphIdx> _activeIndexList;
+    QList<QMuParser> _valueParsers;
+    QList<QList<int>> _expressionDataPointIndices; //!< Parallel to _valueParsers
+    QStringList _lastFailureMsgs;                  //!< Parallel to _valueParsers; last logged failure, empty if none
+};
+
+#endif // GRAPHDATAHANDLER_H

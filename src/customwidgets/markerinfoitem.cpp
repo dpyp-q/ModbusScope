@@ -1,0 +1,358 @@
+
+#include "markerinfoitem.h"
+
+#include <limits>
+
+#include "models/graphdatamodel.h"
+#include "models/graphdataseries.h"
+#include "models/guimodel.h"
+#include "util/util.h"
+
+MarkerInfoItem::MarkerInfoItem(QWidget* parent) : QFrame(parent)
+{
+    _pLayout = new QVBoxLayout();
+
+    _pLayout->setSpacing(0);
+    _pLayout->setContentsMargins(0, 0, 0, 0); // This is redundant with setMargin, which is deprecated
+
+    _pGraphCombo = new QComboBox(this);
+    _pGraphCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+
+    QWidget* pInfoWidget = new QWidget(this);
+    QHBoxLayout* pInfoLayout = new QHBoxLayout(pInfoWidget);
+
+    _pGraphDataLabelLeft = new QLabel("", this);
+    _pGraphDataLabelRight = new QLabel("", this);
+    _pGraphDataLabelRight->setAlignment(Qt::AlignTop);
+
+    pInfoLayout->setSpacing(0);
+    pInfoLayout->setContentsMargins(0, 2, 0, 0); // This is redundant with setMargin, which is deprecated
+    pInfoLayout->addWidget(_pGraphDataLabelLeft);
+    pInfoLayout->addWidget(_pGraphDataLabelRight);
+
+    _pLayout->addWidget(_pGraphCombo);
+    _pLayout->addWidget(pInfoWidget);
+
+    connect(_pGraphCombo, QOverload<const int>::of(&QComboBox::currentIndexChanged), this,
+            &MarkerInfoItem::graphSelected);
+
+    setLayout(_pLayout);
+}
+
+void MarkerInfoItem::setModel(GuiModel* pGuiModel, GraphDataModel* pGraphDataModel)
+{
+    _pGuiModel = pGuiModel;
+    _pGraphDataModel = pGraphDataModel;
+
+    connect(_pGraphDataModel, &GraphDataModel::activeChanged, this, &MarkerInfoItem::updateGraphList);
+    connect(_pGraphDataModel, &GraphDataModel::added, this, &MarkerInfoItem::updateGraphList);
+    connect(_pGraphDataModel, &GraphDataModel::moved, this, &MarkerInfoItem::updateGraphList);
+    connect(_pGraphDataModel, &GraphDataModel::removed, this, &MarkerInfoItem::removeFromGraphList);
+    connect(_pGraphDataModel, &GraphDataModel::colorChanged, this, &MarkerInfoItem::updateColor);
+    connect(_pGraphDataModel, &GraphDataModel::labelChanged, this, &MarkerInfoItem::updateLabel);
+
+    connect(_pGuiModel, &GuiModel::startMarkerPosChanged, this, &MarkerInfoItem::updateGraphList);
+    connect(_pGuiModel, &GuiModel::endMarkerPosChanged, this, &MarkerInfoItem::updateGraphList);
+
+    connect(_pGuiModel, &GuiModel::markerExpressionMaskChanged, this, &MarkerInfoItem::updateData);
+
+    updateGraphList();
+}
+
+void MarkerInfoItem::updateData()
+{
+    const GraphIdx graphIdx(_pGraphCombo->currentData().toInt());
+
+    if (!graphIdx.isValid())
+    {
+        return;
+    }
+
+    QSharedPointer<const GraphDataSeries> dataSeries = _pGraphDataModel->dataSeries(graphIdx);
+
+    if (dataSeries->isEmpty())
+    {
+        return;
+    }
+
+    QStringList expressionList;
+    const quint32 mask = _pGuiModel->markerExpressionMask();
+
+    for (qint32 idx = 0; idx < GuiModel::cMarkerExpressionBits.size(); idx++)
+    {
+        if (mask & GuiModel::cMarkerExpressionBits[idx])
+        {
+            const QString& expression = GuiModel::cMarkerExpressionStrings[idx];
+            const double expressionValue = calculateMarkerExpressionValue(GuiModel::cMarkerExpressionBits[idx]);
+
+            expressionList.append(expression.arg(Util::formatDoubleForExport(expressionValue)));
+        }
+    }
+
+    /* Add permanent items (y1, y2) */
+    expressionList.prepend(GuiModel::cMarkerExpressionEnd.arg(
+      Util::formatDoubleForExport(markerValue(*dataSeries, _pGuiModel->endMarkerPos()))));
+    expressionList.prepend(GuiModel::cMarkerExpressionStart.arg(
+      Util::formatDoubleForExport(markerValue(*dataSeries, _pGuiModel->startMarkerPos()))));
+
+    /* Construct labels data */
+    const qint32 leftRowCount = expressionList.size() - expressionList.size() / 2;
+    QString graphDataLeft;
+    QString graphDataRight;
+    for (qint32 idx = 0; idx < expressionList.size(); idx++)
+    {
+        if (idx < leftRowCount)
+        {
+            graphDataLeft.append(expressionList[idx]);
+        }
+        else
+        {
+            graphDataRight.append(expressionList[idx]);
+        }
+    }
+
+    _pGraphDataLabelLeft->setText(graphDataLeft);
+    _pGraphDataLabelRight->setText(graphDataRight);
+}
+
+void MarkerInfoItem::updateGraphList(void)
+{
+    /* Get current select index */
+    const qint32 currentSelectedIdx = _pGraphCombo->currentData().toInt();
+
+    updateList();
+
+    selectGraph(currentSelectedIdx);
+}
+
+void MarkerInfoItem::updateColor(GraphIdx graphIdx)
+{
+    const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+    if (!activeIdx.isValid())
+    {
+        return;
+    }
+
+    /* + 1 for none selection */
+    const int idx = activeIdx.v + 1;
+    if (idx >= _pGraphCombo->count())
+    {
+        return;
+    }
+
+    QPixmap pixmap(20, 5);
+    pixmap.fill(_pGraphDataModel->color(graphIdx));
+    _pGraphCombo->setItemIcon(idx, QIcon(pixmap));
+}
+
+void MarkerInfoItem::updateLabel(GraphIdx graphIdx)
+{
+    const ActiveIdx activeIdx = _pGraphDataModel->convertToActiveGraphIndex(graphIdx);
+    if (!activeIdx.isValid())
+    {
+        return;
+    }
+
+    /* + 1 for none selection */
+    const int idx = activeIdx.v + 1;
+    if (idx >= _pGraphCombo->count())
+    {
+        return;
+    }
+
+    _pGraphCombo->setItemText(idx, _pGraphDataModel->label(graphIdx));
+}
+
+void MarkerInfoItem::removeFromGraphList(GraphIdx index)
+{
+    /* Get current select index */
+    qint32 currentSelectedIdx = _pGraphCombo->currentData().toInt();
+
+    /* correct selected index when needed */
+    if (currentSelectedIdx != -1)
+    {
+        if (index.v == currentSelectedIdx)
+        {
+            /* Current selected is removed */
+            currentSelectedIdx = -1;
+        }
+        else if (index.v < currentSelectedIdx)
+        {
+            /* Graph removed in front of our graph */
+            currentSelectedIdx--;
+        }
+        else
+        {
+            /* No need to change */
+        }
+    }
+
+    updateList();
+
+    selectGraph(currentSelectedIdx);
+}
+
+void MarkerInfoItem::graphSelected(qint32 index)
+{
+    if (index > 0)
+    {
+        updateData();
+    }
+    else
+    {
+        _pGraphDataLabelLeft->setText("None");
+        _pGraphDataLabelRight->setText("");
+    }
+}
+
+void MarkerInfoItem::updateList()
+{
+    QList<GraphIdx> activeGraphList;
+    _pGraphDataModel->activeGraphIndexList(activeGraphList);
+
+    _pGraphCombo->clear();
+
+    _pGraphCombo->addItem("None", -1);
+
+    foreach (GraphIdx idx, activeGraphList)
+    {
+        _pGraphCombo->addItem(_pGraphDataModel->label(idx), QVariant(idx.v));
+
+        updateColor(idx);
+    }
+}
+
+void MarkerInfoItem::selectGraph(qint32 graphIndex)
+{
+    for (qint32 comboIdx = 0; comboIdx < _pGraphCombo->count(); comboIdx++)
+    {
+        if (_pGraphCombo->itemData(comboIdx).toInt() == graphIndex)
+        {
+            _pGraphCombo->setCurrentIndex(comboIdx);
+            break;
+        }
+    }
+}
+
+/*!
+ * \brief Look up the sample value at \p markerPos, clamped to the series' extent
+ *
+ * findBegin() returns constEnd() when \p markerPos lies beyond the last sample (e.g. the marker was
+ * snapped to a different, longer-running signal). In that case the last sample's value is used instead.
+ * \p dataSeries must not be empty.
+ * \param dataSeries Series to sample.
+ * \param markerPos Timestamp to look up.
+ * \return Value of the sample at or after \p markerPos, or the last sample's value when out of range.
+ */
+double MarkerInfoItem::markerValue(const GraphDataSeries& dataSeries, double markerPos)
+{
+    Q_ASSERT(!dataSeries.isEmpty());
+
+    GraphDataSeries::const_iterator it = dataSeries.findBegin(markerPos, false);
+    if (it == dataSeries.constEnd())
+    {
+        --it;
+    }
+    return it->value;
+}
+
+double MarkerInfoItem::calculateMarkerExpressionValue(quint32 expressionMask)
+{
+    double result = 0;
+    const GraphIdx graphIdx(_pGraphCombo->currentData().toInt());
+
+    if (!graphIdx.isValid())
+    {
+        return 0;
+    }
+
+    QSharedPointer<const GraphDataSeries> pDataSeries = _pGraphDataModel->dataSeries(graphIdx);
+
+    if (pDataSeries->isEmpty())
+    {
+        return 0;
+    }
+
+    const double valueDiff =
+      markerValue(*pDataSeries, _pGuiModel->endMarkerPos()) - markerValue(*pDataSeries, _pGuiModel->startMarkerPos());
+    const double timeDiff = _pGuiModel->endMarkerPos() - _pGuiModel->startMarkerPos();
+
+    GraphDataSeries::const_iterator dataPoint;
+    GraphDataSeries::const_iterator start;
+    GraphDataSeries::const_iterator end;
+
+    /* make sure we go in ascending order */
+    if (_pGuiModel->endMarkerPos() > _pGuiModel->startMarkerPos())
+    {
+        start = pDataSeries->findBegin(_pGuiModel->startMarkerPos(), false);
+        end = pDataSeries->findEnd(_pGuiModel->endMarkerPos(), false);
+    }
+    else
+    {
+        /* Change order */
+        start = pDataSeries->findBegin(_pGuiModel->endMarkerPos());
+        end = pDataSeries->findEnd(_pGuiModel->startMarkerPos());
+    }
+
+    if (expressionMask == GuiModel::cDifferenceMask)
+    {
+        result = valueDiff;
+    }
+    else if (expressionMask == GuiModel::cSlopeMask)
+    {
+        result = valueDiff / (timeDiff / 1000); // per second, TODO: round?
+    }
+    else if (expressionMask == GuiModel::cAverageMask)
+    {
+        double avg = 0;
+        quint32 count = 0;
+        for (dataPoint = start; dataPoint != end; ++dataPoint)
+        {
+            count++;
+            avg += dataPoint->value;
+        }
+
+        if (count == 0)
+        {
+            result = 0;
+        }
+        else
+        {
+            result = avg / count;
+        }
+    }
+    else if (expressionMask == GuiModel::cMinimumMask)
+    {
+        double min = std::numeric_limits<double>::max();
+
+        for (dataPoint = start; dataPoint != end; ++dataPoint)
+        {
+            if (dataPoint->value < min)
+            {
+                min = dataPoint->value;
+            }
+        }
+
+        result = min;
+    }
+    else if (expressionMask == GuiModel::cMaximumMask)
+    {
+        double max = std::numeric_limits<double>::lowest();
+
+        for (dataPoint = start; dataPoint != end; ++dataPoint)
+        {
+            if (dataPoint->value > max)
+            {
+                max = dataPoint->value;
+            }
+        }
+
+        result = max;
+    }
+    else
+    {
+        result = 0;
+    }
+
+    return result;
+}
