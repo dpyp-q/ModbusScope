@@ -1,72 +1,22 @@
-
-# Source: https://github.com/github/gitignore
-
-# C++ objects and libs
-*.slo
-*.lo
-*.o
+# Qt/CMake 构建产物
+build/
+*_build/
+*.exe
 *.a
-*.la
-*.lai
 *.so
-*.so.*
-*.dll
 *.dylib
-.cache
-
-# Qt-es
-object_script.*.Release
-object_script.*.Debug
-*_plugin_import.cpp
-/.qmake.cache
-/.qmake.stash
-*.pro.user
-*.pro.user.*
-*.qbs.user
-*.qbs.user.*
-*.moc
+*.dll
 moc_*.cpp
-moc_*.h
 qrc_*.cpp
 ui_*.h
-*.qmlc
-*.jsc
-*.qm
-*.prl
 
-# Qt unit tests
-target_wrapper.*
+# Qt Creator & CMake
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
 
-# QtCreator
-*.autosave
-
-# QtCreator Qml
-*.qmlproject.user
-*.qmlproject.user.*
-
-# QtCreator CMake
-CMakeLists.txt.user*
-
-# QtCreator 4.8< compilation database
-compile_commands.json
-
-# QtCreator local machine specific files for imported projects
-*creator.user*
-
-src/util/version.h
-resources/modbusscope.rc
-
-# docs
-_build
-build/
-venv
-*docs/doxygen/html
-*docs/doxygen/doxygen.log
-
-.vscode/
-
-coverage/
-
-describe.json
-
-*-adapter-spec.md
+# 日志/临时文件
+*.log
+*.tmp
