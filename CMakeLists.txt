@@ -38,7 +38,6 @@ find_package(Qt${QT_VERSION_MAJOR} COMPONENTS
     Xml
     Network
     PrintSupport
-    SerialBus
     SerialPort
 
     REQUIRED
@@ -51,11 +50,10 @@ set(QT_LIB
     Qt::Xml
     Qt::Network
     Qt::PrintSupport
-    Qt::SerialBus
     Qt::SerialPort
 )
 
-add_compile_options(-Wall -Wextra -Werror)
+add_compile_options(-Wall -Wextra -Werror -Wno-error=deprecated-declarations)
 if (MINGW)
     add_compile_options(-Wa,-mbig-obj)
 endif()

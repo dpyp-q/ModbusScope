@@ -31,3 +31,10 @@ add_library (qcustomplot ${PLOT_SRCS})
 
 target_link_libraries(qcustomplot PUBLIC ${QT_PLOT_LIB})
 
+# Qt 6.12 marks QImage::mirrored() as deprecated; qcustomplot v2.1.1 has not
+# migrated to flipped(Qt::Orientations) yet. Tolerate the deprecation only for
+# this third-party target instead of weakening the project-wide -Werror.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(qcustomplot PRIVATE -Wno-error=deprecated-declarations)
+endif()
+
